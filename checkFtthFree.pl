@@ -29,19 +29,30 @@ use Time::HiRes qw'time sleep';
 
 require HTTP::Tiny;
 require Net::Ping;
+{
+  no warnings 'once';
+  $Net::Ping::pingstring="PING\n";
+}
 require POSIX;
 require Time::Piece;
 
-my $VERSION='0.10';
+my $VERSION='0.11';
 my $PROGRAM_NAME='checkFtthFree';
 
-my %TEST_DATA = ( 'local' => ['212.27.38.253',8095,'/fixed/10G',2,10],
-                  Internet => { download => { 12876 => { BBR => ['ipv4.scaleway.testdebit.info',80,'/10G.iso',10,30],
-                                                         CUBIC => ['ping.online.net',80,'/10000Mo.dat',10,30] },
-                                              5410 => { BBR => ['ipv4.paris.testdebit.info',80,'/10G.iso',10,30],
-                                                        CUBIC => ['ipv4.bouygues.testdebit.info',80,'/10G.iso',10,30] } },
-                                upload => { 12876 => ['ipv4.scaleway.testdebit.info',80,'',10,30],
-                                            5410 => ['ipv4.paris.testdebit.info',80,'',10,30] } } );
+my %TEST_DATA = ( 'local' => { IPv4 => ['212.27.38.253',8095,'/fixed/10G',2,10] },
+                  Internet => { IPv4 => { download => { 12876 => { BBR => ['ipv4.scaleway.testdebit.info',80,'/10G.iso',10,30],
+                                                                   CUBIC => ['ping.online.net',80,'/10000Mo.dat',10,30] },
+                                                        5410 => { BBR => ['ipv4.paris.testdebit.info',80,'/10G.iso',10,30],
+                                                                  CUBIC => ['ipv4.bouygues.testdebit.info',80,'/10G.iso',10,30] } },
+                                          upload => { 12876 => ['ipv4.scaleway.testdebit.info',80,'',10,30],
+                                                      5410 => ['ipv4.paris.testdebit.info',80,'',10,30] } },
+                                IPv6 => { download => { 12876 => { BBR => ['ipv6.scaleway.testdebit.info',80,'/10G.iso',10,30],
+                                                                   CUBIC => ['ping6.online.net',80,'/10000Mo.dat',10,30] },
+                                                        5410 => { BBR => ['ipv6.paris.testdebit.info',80,'/10G.iso',10,30],
+                                                                  CUBIC => ['ipv6.bouygues.testdebit.info',80,'/10G.iso',10,30] } },
+                                          upload => { 12876 => ['ipv6.scaleway.testdebit.info',80,'',10,30],
+                                                      5410 => ['ipv6.paris.testdebit.info',80,'',10,30] } },
+                  } );
 my %AS_NAMES = ( 5410 => 'Bouygues Telecom',
                  6799 => 'OTE',
                  12322 => 'Free',
@@ -79,7 +90,8 @@ my %cmdOpts=('check-update' => ['Effectue seulement la vérification de disponib
              'extended-test' => ['Effectue des tests plus longs (multiplie par 2 la durée max des tests)','e'],
              'quiet' => ["Mode silencieux: désactive les messages d'analyse et d'avertissement",'q'],
              help => ["Affiche l'aide",'h'],
-             version => ['Affiche la version','v']);
+             version => ['Affiche la version','v'],
+             ipv6 => ['Effectue les tests Internet en IPv6 (IPv4 par défaut)','6']);
 my %cmdOptsAliases = map {$cmdOpts{$_}[1] => $_} (keys %cmdOpts);
 
 my $httpClient=HTTP::Tiny->new(proxy => undef, http_proxy => undef, https_proxy => undef);
@@ -486,7 +498,7 @@ sub sndWindowToWmemValue {
 sub fixMemSize { return POSIX::ceil($_[0]/POSIX::BUFSIZ())*POSIX::BUFSIZ() }
 
 sub testTcp {
-  my ($type,$mode,$as,$cca)=@_;
+  my ($type,$ipv,$mode,$as,$cca)=@_;
   
   my ($testDescription,$testIp,$testPort,$testUrl,$testTimeout,$expectedMaxLatency)=getTestData(@_);
   print "Test TCP $testDescription\n";
@@ -501,7 +513,7 @@ sub testTcp {
   my ($speed,$maxThroughput);
 
   if(! $options{'skip-latency'}) {
-    my ($rttMs,$jitter)=getTcpLatency($testIp,$testPort,$testTimeout,$maxNbPings);
+    my ($rttMs,$jitter)=getTcpLatency($testIp,$testPort,$ipv,$testTimeout,$maxNbPings);
     if(! defined $rttMs) {
       if($type eq 'local') {
         print "[!] Echec du test de latence\n";
@@ -542,8 +554,8 @@ sub testTcp {
 }
 
 sub getTestData {
-  my ($type,$mode,$as,$cca)=@_;
-  my $testDescription="$type: ";
+  my ($type,$ipv,$mode,$as,$cca)=@_;
+  my $testDescription="$type ($ipv): ";
   if($type eq 'local') {
     $testDescription.=($options{latency}?'':'téléchargement depuis la ').'Freebox';
   }else{
@@ -565,7 +577,7 @@ sub getTestData {
 
 my %latencyCache;
 sub getTcpLatency {
-  my ($ip,$port,$timeout,$nbPings)=@_;
+  my ($ip,$port,$ipv,$timeout,$nbPings)=@_;
   $port//=80;
   $timeout//=5;
   $nbPings//=10;
@@ -574,10 +586,11 @@ sub getTcpLatency {
   
   return wantarray() ? @{$latencyCache{"$ip:$port"}} : $latencyCache{"$ip:$port"}->[0] if(defined $latencyCache{"$ip:$port"});
 
-  my @pingTimes;
-  my $streamPinger=Net::Ping->new({proto => 'stream', timeout => $timeout, family => 'ipv4', pingstring => "PING\n"});
+  # use parameter list form of Net::Ping constructor call to workaround bug https://rt.cpan.org/Public/Bug/Display.html?id=131919
+  my $streamPinger=Net::Ping->new('stream',$timeout,undef,undef,undef,undef,lc($ipv)); 
   $streamPinger->hires();
   $streamPinger->port_number($port);
+  my @pingTimes;
   for my $i (1..$nbPings) {
     my $elapsedTime=time();
     if(! $streamPinger->open($ip)) {
@@ -843,14 +856,14 @@ my ($localDlSpeed,$localMaxThroughput,$internetBbrDlSpeed,$internetBbrMaxThrough
 if(! $options{upload}) {
   if(! $options{'skip-freebox'}) {
     print "\n" if($crNeeded);
-    ($localDlSpeed,$localMaxThroughput)=testTcp('local');
+    ($localDlSpeed,$localMaxThroughput)=testTcp('local','IPv4');
     $crNeeded=1;
   }
   if(! $options{freebox}) {
     print "\n" if($crNeeded);
-    ($internetBbrDlSpeed,$internetBbrMaxThroughput)=testTcp('Internet','download',$srvAs,'BBR');
+    ($internetBbrDlSpeed,$internetBbrMaxThroughput)=testTcp('Internet',$options{ipv6} ? 'IPv6' : 'IPv4','download',$srvAs,'BBR');
     print "\n";
-    ($internetCubicDlSpeed,$internetCubicMaxThroughput)=testTcp('Internet','download',$srvAs,'CUBIC');
+    ($internetCubicDlSpeed,$internetCubicMaxThroughput)=testTcp('Internet',$options{ipv6} ? 'IPv6' : 'IPv4','download',$srvAs,'CUBIC');
     $crNeeded=1;
   }
 }
@@ -859,7 +872,7 @@ quit() if($options{freebox});
 
 if($options{upload}) {
   print "\n" if($crNeeded);
-  ($internetUlSpeed,$internetUlMaxThroughput)=testTcp('Internet','upload',$srvAs);
+  ($internetUlSpeed,$internetUlMaxThroughput)=testTcp('Internet',$options{ipv6} ? 'IPv6' : 'IPv4','upload',$srvAs);
   $crNeeded=1;
 }
 
