@@ -36,8 +36,10 @@ require Net::Ping;
 require POSIX;
 require Time::Piece;
 
-my $VERSION='0.11';
+my $VERSION='0.12';
 my $PROGRAM_NAME='checkFtthFree';
+
+my $IPV6_COMPAT=eval { require IO::Socket::IP; IO::Socket::IP->VERSION(0.25) };
 
 my %TEST_DATA = ( 'local' => { IPv4 => ['212.27.38.253',8095,'/fixed/10G',2,10] },
                   Internet => { IPv4 => { download => { 12876 => { BBR => ['ipv4.scaleway.testdebit.info',80,'/10G.iso',10,30],
@@ -145,6 +147,8 @@ usage() if(any {$options{$_->[0]} && $options{$_->[1]}} (['check-update','skip-c
                                                          ['latency','upload'],
                                                          ['net-conf','quiet'],
                                                          ['suggestions','quiet']));
+
+quit("Le support d'IPv6 nécessite le module Perl IO::Socket::IP v0.25 ou supérieur") if($options{ipv6} && ! $IPV6_COMPAT);
 
 sub usage {
   print "\nUsage:\n  $0 [<options>]\n";
