@@ -4,8 +4,7 @@ Programme de diagnostic de connexion FTTH Free
 Ce programme analyse la configuration réseau du système et effectue différents
 tests TCP (latence et débit mono-connexion) afin d'évaluer les performances de
 la connexion FTTH et détecter d'éventuels dysfonctionnements.
-Diverses options sont disponibles pour configurer ou désactiver certains tests,
-voir --help (-h) pour plus d'information.
+Diverses options sont disponibles pour configurer ou désactiver certains tests.
 
 Usage:
 
