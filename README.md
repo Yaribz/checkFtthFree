@@ -10,6 +10,7 @@ voir --help (-h) pour plus d'information.
 Usage:
 
     checkFtthFree.pl [<options>]
+        --ipv6 (-6) : Effectue les tests Internet en IPv6 (IPv4 par défaut)
         --alternate-srv (-a) : Change de serveurs pour les tests Internet (utilise l'AS 5410 "Bouygues Telecom" à la place de l'AS 12876 "Scaleway")
         --binary-units (-b) : Utilise les préfixes binaires pour le système d'unités de débit
         --check-update (-c) : Effectue seulement la vérification de disponibilité de nouvelle version
