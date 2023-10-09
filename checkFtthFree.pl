@@ -36,7 +36,7 @@ require Net::Ping;
 require POSIX;
 require Time::Piece;
 
-my $VERSION='0.12';
+my $VERSION='0.13';
 my $PROGRAM_NAME='checkFtthFree';
 
 my $IPV6_COMPAT=eval { require IO::Socket::IP; IO::Socket::IP->VERSION(0.25) };
@@ -88,6 +88,7 @@ my %cmdOpts=('check-update' => ['Effectue seulement la vérification de disponib
              'skip-latency' => ['Désactive les tests de latence (tests de débit uniquement, empêche la détection de certains problèmes)','L'],
              upload => ['Effectue un test de débit montant au lieu de descendant (EXPERIMENTAL)','u'],
              'alternate-srv' => ["Change de serveurs pour les tests Internet (utilise l'AS 5410 \"Bouygues Telecom\" à la place de l'AS 12876 \"Scaleway\")",'a'],
+             'all-srv' => ['Effectue les tests Internet en double, une fois avec chaque AS (le débit le plus élevé est retenu pour le calcul de ratio Cubic/BBR)','A'],
              'binary-units' => ["Utilise les préfixes binaires pour le système d'unités de débit",'b'],
              'extended-test' => ['Effectue des tests plus longs (multiplie par 2 la durée max des tests)','e'],
              'quiet' => ["Mode silencieux: désactive les messages d'analyse et d'avertissement",'q'],
@@ -143,6 +144,8 @@ usage() if(any {$options{$_->[0]} && $options{$_->[1]}} (['check-update','skip-c
                                                          ['freebox','skip-freebox'],
                                                          ['freebox','upload'],
                                                          ['freebox','alternate-srv'],
+                                                         ['freebox','all-srv'],
+                                                         ['alternate-srv','all-srv'],
                                                          ['latency','skip-latency'],
                                                          ['latency','upload'],
                                                          ['net-conf','quiet'],
@@ -866,8 +869,24 @@ if(! $options{upload}) {
   if(! $options{freebox}) {
     print "\n" if($crNeeded);
     ($internetBbrDlSpeed,$internetBbrMaxThroughput)=testTcp('Internet',$options{ipv6} ? 'IPv6' : 'IPv4','download',$srvAs,'BBR');
+    if($options{'all-srv'}) {
+      print "\n";
+      my ($bbr2,$bbrMax2)=testTcp('Internet',$options{ipv6} ? 'IPv6' : 'IPv4','download',5410,'BBR');
+      if($bbr2>$internetBbrDlSpeed) {
+        $internetBbrDlSpeed=$bbr2;
+        $internetBbrMaxThroughput=$bbrMax2;
+      }
+    }
     print "\n";
     ($internetCubicDlSpeed,$internetCubicMaxThroughput)=testTcp('Internet',$options{ipv6} ? 'IPv6' : 'IPv4','download',$srvAs,'CUBIC');
+    if($options{'all-srv'}) {
+      print "\n";
+      my ($cubic2,$cubicMax2)=testTcp('Internet',$options{ipv6} ? 'IPv6' : 'IPv4','download',5410,'CUBIC');
+      if($cubic2>$internetCubicDlSpeed) {
+        $internetCubicDlSpeed=$cubic2;
+        $internetCubicMaxThroughput=$cubicMax2;
+      }
+    }
     $crNeeded=1;
   }
 }
@@ -877,6 +896,14 @@ quit() if($options{freebox});
 if($options{upload}) {
   print "\n" if($crNeeded);
   ($internetUlSpeed,$internetUlMaxThroughput)=testTcp('Internet',$options{ipv6} ? 'IPv6' : 'IPv4','upload',$srvAs);
+  if($options{'all-srv'}) {
+    print "\n";
+    my ($upload2,$uploadMax2)=testTcp('Internet',$options{ipv6} ? 'IPv6' : 'IPv4','upload',5410);
+    if($upload2>$internetUlSpeed) {
+      $internetUlSpeed=$upload2;
+      $internetUlMaxThroughput=$uploadMax2;
+    }
+  }
   $crNeeded=1;
 }
 
@@ -889,12 +916,20 @@ my $isBusyHour;
 }
 
 if(defined $localDlSpeed && $localDlSpeed < 70E6) {
-  printDiag("[!] Débit local dégradé (le matériel utilisé pour les tests ne permet pas de vérifier complètement les capacités de la connexion FTTH)");
-  if($options{suggestions}) {
-    if($degradedTcpConf || (defined $localMaxThroughput && $localDlSpeed > 3 * $localMaxThroughput / 5)) {
-      print "    Recommandation: ajuster le paramétrage réseau du système\n";
-    }else{
-      print "    Recommandation: vérifier qu'une liaison filaire est utilisée et que rien d'autre ne consomme de la bande passante ni du CPU sur le système\n";
+  if((! defined $internetBbrDlSpeed || $internetBbrDlSpeed < 90E6)
+     && (! defined $internetCubicDlSpeed || $internetCubicDlSpeed < 90E6)) {
+    printDiag("[!] Débit local dégradé (le matériel utilisé pour les tests ne permet pas de vérifier complètement les capacités de la connexion FTTH)");
+    if($options{suggestions}) {
+      if($degradedTcpConf || (defined $localMaxThroughput && $localDlSpeed > 3 * $localMaxThroughput / 5)) {
+        print "    Recommandation: ajuster le paramétrage réseau du système\n";
+      }else{
+        print "    Recommandation: vérifier qu'une liaison filaire est utilisée et que rien d'autre ne consomme de la bande passante ni du CPU sur le système\n";
+      }
+    }
+  }else{
+    printDiag("[!] Les performances du service de test de débit de la Freebox sont dégradées");
+    if($options{suggestions}) {
+      print "    Recommandation: vérifier que rien d'autre ne consomme des ressources sur la Freebox (TV, téléchargements, Torrent...)\n";
     }
   }
 }
@@ -905,13 +940,15 @@ my %congestionLevels=(1 => 'une forte perte de paquets',
 if(defined $internetBbrDlSpeed && defined $internetCubicDlSpeed) {
   my $cubicBbrRatio=$internetCubicDlSpeed/$internetBbrDlSpeed;
   my $congestionLevel;
-  for my $cl (sort keys %congestionLevels) {
+  my @sortedCongestionLevels=sort keys %congestionLevels;
+  for my $cl (@sortedCongestionLevels) {
     if($cubicBbrRatio < $cl/10) {
       $congestionLevel=$cl;
       last;
     }
   }
   if($congestionLevel) {
+    $congestionLevel=$sortedCongestionLevels[-1] if($internetCubicDlSpeed > 100_000_000);
     my $percentRatio=sprintf('%.2f',$cubicBbrRatio*100).'%';
     printDiag('[!] La connexion aux serveurs de test semble affectée par '.$congestionLevels{$congestionLevel});
     printDiag("      (ratio débit CUBIC/BBR: $percentRatio)");
