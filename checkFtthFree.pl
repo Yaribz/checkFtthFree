@@ -27,6 +27,11 @@ use utf8;
 use List::Util qw'any min sum0';
 use Time::HiRes qw'time sleep';
 
+use constant {
+  LINUX => $^O eq 'linux',
+  MSWIN32 => $^O eq 'MSWin32',
+};
+
 require HTTP::Tiny;
 require Net::Ping;
 {
@@ -36,7 +41,7 @@ require Net::Ping;
 require POSIX;
 require Time::Piece;
 
-my $VERSION='0.13';
+my $VERSION='0.14';
 my $PROGRAM_NAME='checkFtthFree';
 
 my $IPV6_COMPAT=eval { require IO::Socket::IP; IO::Socket::IP->VERSION(0.25) };
@@ -99,8 +104,7 @@ my %cmdOptsAliases = map {$cmdOpts{$_}[1] => $_} (keys %cmdOpts);
 
 my $httpClient=HTTP::Tiny->new(proxy => undef, http_proxy => undef, https_proxy => undef);
 
-my $osIsWindows=$^O eq 'MSWin32';
-if($osIsWindows) {
+if(MSWIN32) {
   require Win32;
   eval "use open ':std', OUT => ':encoding(cp'.Win32::GetConsoleOutputCP().')'";
   if($@) {
@@ -170,7 +174,7 @@ sub quit {
   }else{
     print "\n";
   }
-  if($osIsWindows) {
+  if(MSWIN32) {
     print "Appuyer sur Entrée pour quitter...\n";
     <STDIN>;
   }
@@ -232,7 +236,7 @@ sub checkForNewVersion {
     }
   }else{
     my $errorDetail = $result->{status} == 599 ? $result->{content} : "HTTP status: $result->{status}, reason: $result->{reason}";
-    $errorDetail=~s/\x{0092}/'/g if($osIsWindows);
+    $errorDetail=~s/\x{0092}/'/g if(MSWIN32);
     chomp($errorDetail);
     print "[!] Impossible de vérifier si une nouvelle version est disponible ($errorDetail)\n";
   }
@@ -270,7 +274,7 @@ sub printHeaderLine {
 
 sub getOsName {
   my $n;
-  if($osIsWindows) {
+  if(MSWIN32) {
     $n=Win32::GetOSDisplayName();
   }else{
     my @uname=POSIX::uname();
@@ -287,7 +291,7 @@ sub getOsName {
 my %tcpConf;
 sub getTcpConf {
   my ($tcpConfReadCmd,@tcpConfFields);
-  if($osIsWindows) {
+  if(MSWIN32) {
     $tcpConfReadCmd='powershell.exe Get-NetTCPSetting Internet 2>NUL';
     @tcpConfFields=qw'
         AutoTuningLevelEffective
@@ -304,19 +308,43 @@ sub getTcpConf {
     }
   }elsif(my $sysctlBin=findSysctlBin()) {
     $tcpConfReadCmd="$sysctlBin -a 2>/dev/null";
-    @tcpConfFields=qw'
-        net.core.default_qdisc
-        net.core.rmem_max
-        net.core.wmem_max
-        net.ipv4.tcp_adv_win_scale
-        net.ipv4.tcp_congestion_control
-        net.ipv4.tcp_mem
-        net.ipv4.tcp_no_metrics_save
-        net.ipv4.tcp_rmem
-        net.ipv4.tcp_sack
-        net.ipv4.tcp_timestamps
-        net.ipv4.tcp_window_scaling
-        net.ipv4.tcp_wmem';
+    if(LINUX) {
+      @tcpConfFields=qw'
+          net.core.default_qdisc
+          net.core.rmem_max
+          net.core.wmem_max
+          net.ipv4.tcp_adv_win_scale
+          net.ipv4.tcp_congestion_control
+          net.ipv4.tcp_mem
+          net.ipv4.tcp_no_metrics_save
+          net.ipv4.tcp_rmem
+          net.ipv4.tcp_sack
+          net.ipv4.tcp_timestamps
+          net.ipv4.tcp_window_scaling
+          net.ipv4.tcp_wmem';
+    }else{
+      @tcpConfFields=qw'
+          kern.ipc.maxsockbuf
+          net.inet.tcp.sendspace
+          net.inet.tcp.recvspace
+          net.inet.tcp.sendbuf_auto
+          net.inet.tcp.sendbuf_max
+          net.inet.tcp.sendbuf_inc
+          net.inet.tcp.sendbuf_auto_lowat
+          net.inet.tcp.recvbuf_auto
+          net.inet.tcp.recvbuf_max
+          net.inet.tcp.recvbuf_inc
+          net.inet.tcp.reass.maxqueuelen
+          net.inet.tcp.sack.enable
+          net.inet.tcp.ecn.enable
+          net.inet.tcp.hostcache.enable
+          net.inet.tcp.rfc1323
+          net.inet.tcp.rfc3042
+          net.inet.tcp.functions_available
+          net.inet.tcp.functions_default
+          net.inet.tcp.cc.available
+          net.inet.tcp.cc.algorithm';
+    }
   }else{
     return;
   }
@@ -357,7 +385,7 @@ sub tcpConfAnalysis {
   if(%tcpConf) {
     print "Paramétrage réseau actuel du système:\n";
     map {print "  $_: $tcpConf{$_}\n"} (sort keys %tcpConf);
-    if($osIsWindows) {
+    if(MSWIN32) {
       if(defined $tcpConf{AutoTuningLevelLocal}) {
         processWindowsAutoTuningLevel('AutoTuningLevelLocal');
         if($tcpConf{AutoTuningLevelLocal} ne 'Normal') {
@@ -388,7 +416,7 @@ sub tcpConfAnalysis {
           print "      [cmd.exe] netsh interface tcp set heuristics disabled\n";
         }
       }
-    }else{
+    }elsif(LINUX) {
       my $rmemMax;
       if(defined $tcpConf{'net.core.rmem_max'}) {
         if($tcpConf{'net.core.rmem_max'} =~ /^\s*(\d+)\s*$/) {
@@ -436,19 +464,67 @@ sub tcpConfAnalysis {
         }
       }
       $sndWindow=$wmemMax*$TCP_WMEM_SND_WINDOW_RATIO if(defined $wmemMax);
+    }else{
+      my %freebsdParams;
+      if(defined $tcpConf{'kern.ipc.maxsockbuf'}) {
+        if($tcpConf{'kern.ipc.maxsockbuf'} =~ /^\s*(\d+)\s*$/) {
+          $freebsdParams{maxsockbuf}=$1;
+        }else{
+          print "[!] Valeur de kern.ipc.maxsockbuf non reconnue\n";
+        }
+      }
+      foreach my $tcpParam (qw'recvbuf_auto sendbuf_auto') {
+        my $fullParam='net.inet.tcp.'.$tcpParam;
+        if(defined $tcpConf{$fullParam}) {
+          if($tcpConf{$fullParam} =~ /^\s*([01])\s*$/) {
+            $freebsdParams{$tcpParam}=$1;
+          }else{
+            print "[!] Valeur de $fullParam non reconnue\n";
+          }
+        }
+      }
+      foreach my $tcpParam (qw'recvbuf_max recvspace sendbuf_max sendspace') {
+        my $fullParam='net.inet.tcp.'.$tcpParam;
+        if(defined $tcpConf{$fullParam}) {
+          if($tcpConf{$fullParam} =~ /^\s*(\d+)\s*$/) {
+            $freebsdParams{$tcpParam}=$1;
+          }else{
+            print "[!] Valeur de $fullParam non reconnue\n";
+          }
+        }
+      }
+      if(defined $freebsdParams{maxsockbuf} && defined $freebsdParams{recvspace} && defined $freebsdParams{sendspace} && $freebsdParams{maxsockbuf} < $freebsdParams{recvspace} + $freebsdParams{sendspace}) {
+        $freebsdParams{maxsockbuf}=$freebsdParams{recvspace}+$freebsdParams{sendspace};
+      }
+      if($freebsdParams{recvbuf_auto}) {
+        ($rmemMaxParam,$rcvWindow)=('kern.ipc.maxsockbuf',$freebsdParams{maxsockbuf}-($freebsdParams{sendspace}//0)) if(defined $freebsdParams{maxsockbuf});
+        ($rmemMaxParam,$rcvWindow)=('net.inet.tcp.recvbuf_max',$freebsdParams{recvbuf_max}) if(defined $freebsdParams{recvbuf_max} && (! defined $rcvWindow || $rcvWindow > $freebsdParams{recvbuf_max}));
+      }else{
+        ($rmemMaxParam,$rcvWindow)=('net.inet.tcp.recvspace',$freebsdParams{recvspace}) if(defined $freebsdParams{recvspace});
+      }
+      if($freebsdParams{sendbuf_auto}) {
+        ($wmemMaxParam,$sndWindow)=('kern.ipc.maxsockbuf',$freebsdParams{maxsockbuf}) if(defined $freebsdParams{maxsockbuf});
+        ($wmemMaxParam,$sndWindow)=('net.inet.tcp.sendbuf_max',$freebsdParams{sendbuf_max}) if(defined $freebsdParams{sendbuf_max} && (! defined $sndWindow || $sndWindow > $freebsdParams{sendbuf_max}));
+      }else{
+        ($wmemMaxParam,$sndWindow)=('net.inet.tcp.sendspace',$freebsdParams{sendspace}) if(defined $freebsdParams{sendspace});
+      }
     }
     if(defined $rcvWindow) {
       my $maxRttMsFor1Gbps = int($rcvWindow * 1000 / $GOODPUT_1Gbps_Bytes + 0.5);
       print "  => Latence TCP max pour une réception à 1 Gbps: ${maxRttMsFor1Gbps} ms\n";
-      if(! $osIsWindows && $maxRttMsFor1Gbps < $RECOMMENDED_MIN_RTT_MAX_FOR_FULL_BANDWIDTH) {
-        if($tcpAdvWinScale < -3) {
-          print "[!] Les valeurs actuelles de net.ipv4.tcp_adv_win_scale et $rmemMaxParam peuvent dégrader les performances\n";
+      if(! MSWIN32 && $maxRttMsFor1Gbps < $RECOMMENDED_MIN_RTT_MAX_FOR_FULL_BANDWIDTH) {
+        if(LINUX) {
+          if($tcpAdvWinScale < -3) {
+            print "[!] Les valeurs actuelles de net.ipv4.tcp_adv_win_scale et $rmemMaxParam peuvent dégrader les performances\n";
+          }else{
+            print "[!] La valeur actuelle de $rmemMaxParam peut dégrader les performances\n";
+            if($options{suggestions}) {
+              print "    Recommandation: ajuster le paramètre avec la commande suivante\n";
+              print "      sysctl -w $rmemMaxParam=".rcvWindowToRmemValue($RECOMMENDED_MIN_RCV_WINDOW_SIZE)."\n";
+            }
+          }
         }else{
           print "[!] La valeur actuelle de $rmemMaxParam peut dégrader les performances\n";
-          if($options{suggestions}) {
-            print "    Recommandation: ajuster le paramètre avec la commande suivante\n";
-            print "      sysctl -w $rmemMaxParam=".rcvWindowToRmemValue($RECOMMENDED_MIN_RCV_WINDOW_SIZE)."\n";
-          }
         }
       }
     }
@@ -457,7 +533,7 @@ sub tcpConfAnalysis {
       print "  => Latence TCP max pour une émission à 700 Mbps: ${maxRttMsFor700Mbps} ms\n";
       if($maxRttMsFor700Mbps < $RECOMMENDED_MIN_RTT_MAX_FOR_FULL_BANDWIDTH) {
         print "[!] La valeur actuelle de $wmemMaxParam peut dégrader les performances\n";
-        if($options{suggestions}) {
+        if(LINUX && $options{suggestions}) {
           print "    Recommandation: ajuster le paramètre avec la commande suivante\n";
           print "      sysctl -w $wmemMaxParam=".sndWindowToWmemValue($RECOMMENDED_MIN_SND_WINDOW_SIZE)."\n";
         }
@@ -639,7 +715,7 @@ sub checkMaxRcvThroughputForLatency {
   my $maxThroughput=$rcvWindow*1000/$latency;
   if($maxThroughput < $GOODPUT_1Gbps_Bytes) {
     print "[!] Avec cette latence, le paramétrage actuel de mémoire tampon TCP pourrait limiter le débit en réception à environ ".readableSpeed($maxThroughput)."\n";
-    if(! $osIsWindows && $options{suggestions} && $tcpAdvWinScale > -4) {
+    if(LINUX && $options{suggestions} && $tcpAdvWinScale > -4) {
       print "    Recommandation: si la latence estimée est correcte, augmenter la mémoire tampon max avec la commande suivante\n";
       print "      sysctl -w $rmemMaxParam=".rcvWindowToRmemValue($GOODPUT_1Gbps_Bytes*$latency/1000)."\n";
     }
@@ -654,7 +730,7 @@ sub checkMaxSndThroughputForLatency {
   my $maxThroughput=$sndWindow*1000/$latency;
   if($maxThroughput < $GOODPUT_700Mbps_Bytes) {
     print "[!] Avec cette latence, le paramétrage actuel de mémoire tampon TCP pourrait limiter le débit en émission à environ ".readableSpeed($maxThroughput)."\n";
-    if($options{suggestions}) {
+    if(LINUX && $options{suggestions}) {
       print "    Recommandation: si la latence estimée est correcte, augmenter la mémoire tampon max avec la commande suivante\n";
       print "      sysctl -w $wmemMaxParam=".sndWindowToWmemValue($GOODPUT_700Mbps_Bytes*$latency/1000)."\n";
     }
@@ -730,7 +806,7 @@ sub getDlSpeed {
     return $dlSpeed;
   }else{
     my $errorDetail = $result->{status} == 599 ? $result->{content} : "HTTP status: $result->{status}, reason: $result->{reason}";
-    $errorDetail=~s/\x{0092}/'/g if($osIsWindows);
+    $errorDetail=~s/\x{0092}/'/g if(MSWIN32);
     chomp($errorDetail);
     print "[!] Echec de téléchargement de \"$url\" ($errorDetail)\n";
     return undef;
@@ -808,7 +884,7 @@ sub getUlSpeed {
     return wantarray() ? ($ulSpeed,\@chunkUlData) : $ulSpeed;
   }else{
     my $errorDetail = $result->{status} == 599 ? $result->{content} : "HTTP status: $result->{status}, reason: $result->{reason}";
-    $errorDetail=~s/\x{0092}/'/g if($osIsWindows);
+    $errorDetail=~s/\x{0092}/'/g if(MSWIN32);
     chomp($errorDetail);
     quit("[!] Echec d'envoi vers \"$url\" ($errorDetail)");
   }
