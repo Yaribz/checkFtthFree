@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 #
 # checkFtthFree
-# Copyright (C) 2023 Yann Riou <yaribzh@gmail.com>
+# Copyright (C) 2023-2024 Yann Riou <yaribzh@gmail.com>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as published by
@@ -41,7 +41,7 @@ require Net::Ping;
 require POSIX;
 require Time::Piece;
 
-my $VERSION='0.14';
+my $VERSION='0.15';
 my $PROGRAM_NAME='checkFtthFree';
 
 my $IPV6_COMPAT=eval { require IO::Socket::IP; IO::Socket::IP->VERSION(0.25) };
@@ -276,6 +276,7 @@ sub getOsName {
   my $n;
   if(MSWIN32) {
     $n=Win32::GetOSDisplayName();
+    substr($n,9,1)='1' if(substr($n,0,10) eq 'Windows 10' && (Win32::GetOSVersion())[3] >= 22000);
   }else{
     my @uname=POSIX::uname();
     my ($sysName,$sysRelease,$sysArch)=@uname[0,2,4];
@@ -1003,7 +1004,7 @@ if(defined $localDlSpeed && $localDlSpeed < 70E6) {
       }
     }
   }else{
-    printDiag("[!] Les performances du service de test de débit de la Freebox sont dégradées");
+    printDiag("[!] Les performances du service de test de débit local de la Freebox sont dégradées");
     if($options{suggestions}) {
       print "    Recommandation: vérifier que rien d'autre ne consomme des ressources sur la Freebox (TV, téléchargements, Torrent...)\n";
     }
