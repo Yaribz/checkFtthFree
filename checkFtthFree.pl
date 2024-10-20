@@ -41,7 +41,7 @@ require Net::Ping;
 require POSIX;
 require Time::Piece;
 
-my $VERSION='0.15';
+my $VERSION='0.16';
 my $PROGRAM_NAME='checkFtthFree';
 
 my $IPV6_COMPAT=eval { require IO::Socket::IP; IO::Socket::IP->VERSION(0.25) };
@@ -92,8 +92,6 @@ my %cmdOpts=('check-update' => ['Effectue seulement la vérification de disponib
              latency => ['Effectue seulement les tests de latence (pas de test de débit)','l'],
              'skip-latency' => ['Désactive les tests de latence (tests de débit uniquement, empêche la détection de certains problèmes)','L'],
              upload => ['Effectue un test de débit montant au lieu de descendant (EXPERIMENTAL)','u'],
-             'alternate-srv' => ["Change de serveurs pour les tests Internet (utilise l'AS 5410 \"Bouygues Telecom\" à la place de l'AS 12876 \"Scaleway\")",'a'],
-             'all-srv' => ['Effectue les tests Internet en double, une fois avec chaque AS (le débit le plus élevé est retenu pour le calcul de ratio Cubic/BBR)','A'],
              'binary-units' => ["Utilise les préfixes binaires pour le système d'unités de débit",'b'],
              'extended-test' => ['Effectue des tests plus longs (multiplie par 2 la durée max des tests)','e'],
              'quiet' => ["Mode silencieux: désactive les messages d'analyse et d'avertissement",'q'],
@@ -329,11 +327,15 @@ sub getTcpConf {
           net.inet.tcp.sendspace
           net.inet.tcp.recvspace
           net.inet.tcp.sendbuf_auto
+          net.inet.tcp.doautosndbuf
           net.inet.tcp.sendbuf_max
+          net.inet.tcp.autosndbufmax
           net.inet.tcp.sendbuf_inc
           net.inet.tcp.sendbuf_auto_lowat
           net.inet.tcp.recvbuf_auto
+          net.inet.tcp.doautorcvbuf
           net.inet.tcp.recvbuf_max
+          net.inet.tcp.autorcvbufmax
           net.inet.tcp.recvbuf_inc
           net.inet.tcp.reass.maxqueuelen
           net.inet.tcp.sack.enable
@@ -466,48 +468,54 @@ sub tcpConfAnalysis {
       }
       $sndWindow=$wmemMax*$TCP_WMEM_SND_WINDOW_RATIO if(defined $wmemMax);
     }else{
-      my %freebsdParams;
+      my %bsdParams;
       if(defined $tcpConf{'kern.ipc.maxsockbuf'}) {
         if($tcpConf{'kern.ipc.maxsockbuf'} =~ /^\s*(\d+)\s*$/) {
-          $freebsdParams{maxsockbuf}=$1;
+          $bsdParams{maxsockbuf}=$1;
         }else{
           print "[!] Valeur de kern.ipc.maxsockbuf non reconnue\n";
         }
       }
-      foreach my $tcpParam (qw'recvbuf_auto sendbuf_auto') {
+      foreach my $tcpParam (qw'recvbuf_auto doautorcvbuf sendbuf_auto doautosndbuf') {
         my $fullParam='net.inet.tcp.'.$tcpParam;
         if(defined $tcpConf{$fullParam}) {
           if($tcpConf{$fullParam} =~ /^\s*([01])\s*$/) {
-            $freebsdParams{$tcpParam}=$1;
+            $bsdParams{$tcpParam}=$1;
           }else{
             print "[!] Valeur de $fullParam non reconnue\n";
           }
         }
       }
-      foreach my $tcpParam (qw'recvbuf_max recvspace sendbuf_max sendspace') {
+      foreach my $tcpParam (qw'recvbuf_max autorcvbufmax recvspace sendbuf_max autosndbufmax sendspace') {
         my $fullParam='net.inet.tcp.'.$tcpParam;
         if(defined $tcpConf{$fullParam}) {
           if($tcpConf{$fullParam} =~ /^\s*(\d+)\s*$/) {
-            $freebsdParams{$tcpParam}=$1;
+            $bsdParams{$tcpParam}=$1;
           }else{
             print "[!] Valeur de $fullParam non reconnue\n";
           }
         }
       }
-      if(defined $freebsdParams{maxsockbuf} && defined $freebsdParams{recvspace} && defined $freebsdParams{sendspace} && $freebsdParams{maxsockbuf} < $freebsdParams{recvspace} + $freebsdParams{sendspace}) {
-        $freebsdParams{maxsockbuf}=$freebsdParams{recvspace}+$freebsdParams{sendspace};
+      if(defined $bsdParams{maxsockbuf} && defined $bsdParams{recvspace} && defined $bsdParams{sendspace} && $bsdParams{maxsockbuf} < $bsdParams{recvspace} + $bsdParams{sendspace}) {
+        $bsdParams{maxsockbuf}=$bsdParams{recvspace}+$bsdParams{sendspace};
       }
-      if($freebsdParams{recvbuf_auto}) {
-        ($rmemMaxParam,$rcvWindow)=('kern.ipc.maxsockbuf',$freebsdParams{maxsockbuf}-($freebsdParams{sendspace}//0)) if(defined $freebsdParams{maxsockbuf});
-        ($rmemMaxParam,$rcvWindow)=('net.inet.tcp.recvbuf_max',$freebsdParams{recvbuf_max}) if(defined $freebsdParams{recvbuf_max} && (! defined $rcvWindow || $rcvWindow > $freebsdParams{recvbuf_max}));
+      my $recvBufMaxParam = defined $bsdParams{recvbuf_max} ? 'recvbuf_max' : defined $bsdParams{autorcvbufmax} ? 'autorcvbufmax' : undef;
+      my $sendBufMaxParam = defined $bsdParams{sendbuf_max} ? 'sendbuf_max' : defined $bsdParams{autosndbufmax} ? 'autosndbufmax' : undef;
+      my $recvBufAutoEnabled=$bsdParams{recvbuf_auto}//$bsdParams{doautorcvbuf};
+      $recvBufAutoEnabled//=1 if(defined $recvBufMaxParam);
+      my $sendBufAutoEnabled=$bsdParams{sendbuf_auto}//$bsdParams{doautosndbuf};
+      $sendBufAutoEnabled//=1 if(defined $sendBufMaxParam);
+      if($recvBufAutoEnabled) {
+        ($rmemMaxParam,$rcvWindow)=('kern.ipc.maxsockbuf',$bsdParams{maxsockbuf}-($bsdParams{sendspace}//0)) if(defined $bsdParams{maxsockbuf});
+        ($rmemMaxParam,$rcvWindow)=('net.inet.tcp.'.$recvBufMaxParam,$bsdParams{$recvBufMaxParam}) if(defined $recvBufMaxParam && (! defined $rcvWindow || $rcvWindow > $bsdParams{$recvBufMaxParam}));
       }else{
-        ($rmemMaxParam,$rcvWindow)=('net.inet.tcp.recvspace',$freebsdParams{recvspace}) if(defined $freebsdParams{recvspace});
+        ($rmemMaxParam,$rcvWindow)=('net.inet.tcp.recvspace',$bsdParams{recvspace}) if(defined $bsdParams{recvspace});
       }
-      if($freebsdParams{sendbuf_auto}) {
-        ($wmemMaxParam,$sndWindow)=('kern.ipc.maxsockbuf',$freebsdParams{maxsockbuf}) if(defined $freebsdParams{maxsockbuf});
-        ($wmemMaxParam,$sndWindow)=('net.inet.tcp.sendbuf_max',$freebsdParams{sendbuf_max}) if(defined $freebsdParams{sendbuf_max} && (! defined $sndWindow || $sndWindow > $freebsdParams{sendbuf_max}));
+      if($sendBufAutoEnabled) {
+        ($wmemMaxParam,$sndWindow)=('kern.ipc.maxsockbuf',$bsdParams{maxsockbuf}) if(defined $bsdParams{maxsockbuf});
+        ($wmemMaxParam,$sndWindow)=('net.inet.tcp.'.$sendBufMaxParam,$bsdParams{$sendBufMaxParam}) if(defined $sendBufMaxParam && (! defined $sndWindow || $sndWindow > $bsdParams{$sendBufMaxParam}));
       }else{
-        ($wmemMaxParam,$sndWindow)=('net.inet.tcp.sendspace',$freebsdParams{sendspace}) if(defined $freebsdParams{sendspace});
+        ($wmemMaxParam,$sndWindow)=('net.inet.tcp.sendspace',$bsdParams{sendspace}) if(defined $bsdParams{sendspace});
       }
     }
     if(defined $rcvWindow) {
@@ -1030,9 +1038,8 @@ if(defined $internetBbrDlSpeed && defined $internetCubicDlSpeed) {
     printDiag('[!] La connexion aux serveurs de test semble affectée par '.$congestionLevels{$congestionLevel});
     printDiag("      (ratio débit CUBIC/BBR: $percentRatio)");
     if($options{suggestions}) {
-      print '    Suggestion'.(($isBusyHour || ! $options{'alternate-srv'}) ? 's' :'').":\n";
+      print '    Suggestion'.($isBusyHour?'s':'').":\n";
       print "      - vérifier que rien d'autre ne consomme de la bande passante\n";
-      print "      - relancer le test en utilisant le paramètre --alternate-srv (-a) pour utiliser d'autres serveurs de test\n" unless($options{'alternate-srv'});
       print "      - relancer le test le matin en semaine pour comparer les résultats\n" if($isBusyHour);
     }
   }
