@@ -41,7 +41,7 @@ require Net::Ping;
 require POSIX;
 require Time::Piece;
 
-my $VERSION='0.16';
+my $VERSION='0.17';
 my $PROGRAM_NAME='checkFtthFree';
 
 my $IPV6_COMPAT=eval { require IO::Socket::IP; IO::Socket::IP->VERSION(0.25) };
@@ -305,6 +305,9 @@ sub getTcpConf {
       map {chomp($_)} @networkCategories;
       $tcpConf{NetworkCategory}=join(',',@networkCategories);
     }
+    my $defaultIp = $options{ipv6} ? '::0' : '0.0.0.0';
+    my @defaultAdapterInfo = `powershell.exe "\$ErrorActionPreference='silentlycontinue'; \$defaultInterfaceName=(Find-NetRoute -RemoteIpAddress $defaultIp)[0].InterfaceAlias; if(\$defaultInterfaceName -ne \$null) { Get-NetAdapter -Name \$defaultInterfaceName | Format-List -Property LinkSpeed, PhysicalMediaType; Get-NetAdapterHardwareInfo -Name \$defaultInterfaceName | Format-List -Property PcieLinkSpeed, PcieLinkWidth }" 2>NUL`;
+    map {$tcpConf{$1}=$2 if(/^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/)} @defaultAdapterInfo;
   }elsif(my $sysctlBin=findSysctlBin()) {
     $tcpConfReadCmd="$sysctlBin -a 2>/dev/null";
     if(LINUX) {
@@ -417,6 +420,31 @@ sub tcpConfAnalysis {
           print "    Recommandation: ajuster le paramètre avec une des deux commandes suivantes\n";
           print "      [PowerShell] Set-NetTCPSetting -SettingName Internet -ScalingHeuristics Disabled\n";
           print "      [cmd.exe] netsh interface tcp set heuristics disabled\n";
+        }
+      }
+      if(defined $tcpConf{LinkSpeed} && $tcpConf{LinkSpeed} ne 'Unknown'
+         && defined $tcpConf{PcieLinkSpeed} && $tcpConf{PcieLinkSpeed} ne 'Unknown'
+         && defined $tcpConf{PcieLinkWidth}) {
+        if($tcpConf{LinkSpeed} =~ /^(\d+) ([KMGT]?)bps$/) {
+          my ($linkSpeed,$unitPrefix)=($1,$2);
+          $linkSpeed*={K => 1E3, M => 1E6, G => 1E9, T => 1E12}->{$unitPrefix} if($unitPrefix);
+          if($tcpConf{PcieLinkSpeed} =~ /^(\d+(?:\.\d)?) GT\/s$/) {
+            my $pcieLinkSpeed = $1 * 1E9;
+            if($tcpConf{PcieLinkWidth} =~ /^\d+$/) {
+              $pcieLinkSpeed*=$tcpConf{PcieLinkWidth};
+              if($pcieLinkSpeed < $linkSpeed) {
+                print "[!] La carte réseau utilise actuellement une interface PCI Express avec un taux de transfert ne permettant pas d'atteindre le débit maximum du lien réseau\n";
+                print "    Recommandation: connecter la carte réseau sur un autre slot PCI Express (consulter le manuel de la carte mère si besoin pour trouver un slot adéquat)\n"
+                    if($options{suggestions});
+              }
+            }else{
+              print "[!] Valeur de PcieLinkWidth non reconnue\n";
+            }
+          }else{
+            print "[!] Valeur de PcieLinkSpeed non reconnue\n";
+          }
+        }else{
+          print "[!] Valeur de LinkSpeed non reconnue\n";
         }
       }
     }elsif(LINUX) {
