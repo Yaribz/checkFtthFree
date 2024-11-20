@@ -41,7 +41,7 @@ require Net::Ping;
 require POSIX;
 require Time::Piece;
 
-my $VERSION='0.17';
+my $VERSION='0.18';
 my $PROGRAM_NAME='checkFtthFree';
 
 my $IPV6_COMPAT=eval { require IO::Socket::IP; IO::Socket::IP->VERSION(0.25) };
@@ -289,27 +289,33 @@ sub getOsName {
 
 my %tcpConf;
 sub getTcpConf {
-  my ($tcpConfReadCmd,@tcpConfFields);
   if(MSWIN32) {
-    $tcpConfReadCmd='powershell.exe Get-NetTCPSetting Internet 2>NUL';
-    @tcpConfFields=qw'
-        AutoTuningLevelEffective
-        AutoTuningLevelGroupPolicy
-        AutoTuningLevelLocal
-        CongestionProvider
-        EcnCapability
-        ScalingHeuristics
-        Timestamps';
-    my @networkCategories=`powershell.exe "(Get-NetIPConfiguration -Detailed | Where-Object {\$_.NetProfile.IPv4Connectivity -eq \\"Internet\\"}).NetProfile.NetworkCategory" 2>NUL`;
-    if(@networkCategories) {
-      map {chomp($_)} @networkCategories;
-      $tcpConf{NetworkCategory}=join(',',@networkCategories);
-    }
+    my %NET_PROPERTIES=(
+      TCPSetting => join(', ',(qw'AutoTuningLevelEffective AutoTuningLevelGroupPolicy AutoTuningLevelLocal CongestionProvider EcnCapability ScalingHeuristics Timestamps')),
+      Adapter => join(', ',(qw'LinkSpeed PhysicalMediaType DriverDescription DriverProvider DriverVersionString DriverDate')),
+      AdapterHardwareInfo => join(', ',(qw'PcieLinkSpeed PcieLinkWidth')),
+      Profile => 'NetworkCategory',
+        );
     my $defaultIp = $options{ipv6} ? '::0' : '0.0.0.0';
-    my @defaultAdapterInfo = `powershell.exe "\$ErrorActionPreference='silentlycontinue'; \$defaultInterfaceName=(Find-NetRoute -RemoteIpAddress $defaultIp)[0].InterfaceAlias; if(\$defaultInterfaceName -ne \$null) { Get-NetAdapter -Name \$defaultInterfaceName | Format-List -Property LinkSpeed, PhysicalMediaType; Get-NetAdapterHardwareInfo -Name \$defaultInterfaceName | Format-List -Property PcieLinkSpeed, PcieLinkWidth }" 2>NUL`;
-    map {$tcpConf{$1}=$2 if(/^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/)} @defaultAdapterInfo;
+    my @netConfLines = `powershell.exe "\$ErrorActionPreference='silentlycontinue'; Get-NetTCPSetting Internet | Format-List -Property $NET_PROPERTIES{TCPSetting}; \$defaultInterfaceName=(Find-NetRoute -RemoteIpAddress $defaultIp)[0].InterfaceAlias; if(\$defaultInterfaceName -ne \$null) { Get-NetAdapter -Name \$defaultInterfaceName | Format-List -Property $NET_PROPERTIES{Adapter}; Get-NetAdapterHardwareInfo -Name \$defaultInterfaceName | Format-List -Property $NET_PROPERTIES{AdapterHardwareInfo}; (Get-NetIPConfiguration -Detailed -InterfaceAlias \$defaultInterfaceName).NetProfile | Format-List -Property $NET_PROPERTIES{Profile} }" 2>NUL`;
+    map {$tcpConf{$1}=$2 if(/^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/)} @netConfLines;
+    if(defined $tcpConf{AutoTuningLevelEffective}) {
+      if($tcpConf{AutoTuningLevelEffective} eq 'Local') {
+        delete $tcpConf{AutoTuningLevelGroupPolicy};
+        delete $tcpConf{AutoTuningLevelEffective};
+      }elsif($tcpConf{AutoTuningLevelEffective} eq 'GroupPolicy') {
+        delete $tcpConf{AutoTuningLevelLocal};
+        delete $tcpConf{AutoTuningLevelEffective};
+      }
+    }
+    if(exists $tcpConf{DriverVersionString}) {
+      $tcpConf{DriverVersion}=delete $tcpConf{DriverVersionString};
+      my @driverVersionDetails;
+      map {push(@driverVersionDetails,delete $tcpConf{$_}) if(exists $tcpConf{$_})} (qw'DriverProvider DriverDate');
+      $tcpConf{DriverVersion}.=' ('.join(', ',@driverVersionDetails).')' if(@driverVersionDetails);
+    }
   }elsif(my $sysctlBin=findSysctlBin()) {
-    $tcpConfReadCmd="$sysctlBin -a 2>/dev/null";
+    my @tcpConfFields;
     if(LINUX) {
       @tcpConfFields=qw'
           net.core.default_qdisc
@@ -351,22 +357,11 @@ sub getTcpConf {
           net.inet.tcp.cc.available
           net.inet.tcp.cc.algorithm';
     }
-  }else{
-    return;
-  }
-  my @tcpConfData=`$tcpConfReadCmd`;
-  foreach my $line (@tcpConfData) {
-    if($line =~ /^\s*([^:=]*[^\s:=])\s*[:=]\s*(.*[^\s])\s*$/ && (any {$1 eq $_} @tcpConfFields)) {
-      $tcpConf{$1}=$2;
-    }
-  }
-  if(defined $tcpConf{AutoTuningLevelEffective}) {
-    if($tcpConf{AutoTuningLevelEffective} eq 'Local') {
-      delete $tcpConf{AutoTuningLevelGroupPolicy};
-      delete $tcpConf{AutoTuningLevelEffective};
-    }elsif($tcpConf{AutoTuningLevelEffective} eq 'GroupPolicy') {
-      delete $tcpConf{AutoTuningLevelLocal};
-      delete $tcpConf{AutoTuningLevelEffective};
+    my @netConfLines=`$sysctlBin -a 2>/dev/null`;
+    foreach my $line (@netConfLines) {
+      if($line =~ /^\s*([^:=]*[^\s:=])\s*[:=]\s*(.*[^\s])\s*$/ && (any {$1 eq $_} @tcpConfFields)) {
+        $tcpConf{$1}=$2;
+      }
     }
   }
 }
