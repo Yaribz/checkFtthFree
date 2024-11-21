@@ -41,7 +41,7 @@ require Net::Ping;
 require POSIX;
 require Time::Piece;
 
-my $VERSION='0.18';
+my $VERSION='0.19';
 my $PROGRAM_NAME='checkFtthFree';
 
 my $IPV6_COMPAT=eval { require IO::Socket::IP; IO::Socket::IP->VERSION(0.25) };
@@ -424,7 +424,15 @@ sub tcpConfAnalysis {
           my ($linkSpeed,$unitPrefix)=($1,$2);
           $linkSpeed*={K => 1E3, M => 1E6, G => 1E9, T => 1E12}->{$unitPrefix} if($unitPrefix);
           if($tcpConf{PcieLinkSpeed} =~ /^(\d+(?:\.\d)?) GT\/s$/) {
-            my $pcieLinkSpeed = $1 * 1E9;
+            my $pcieEfficiency;
+            if($1 < 8) {
+              $pcieEfficiency=4/5;
+            }elsif($1 < 64) {
+              $pcieEfficiency=64/65;
+            }else{
+              $pcieEfficiency=121/128;
+            }
+            my $pcieLinkSpeed = $1 * 1E9 * $pcieEfficiency;
             if($tcpConf{PcieLinkWidth} =~ /^\d+$/) {
               $pcieLinkSpeed*=$tcpConf{PcieLinkWidth};
               if($pcieLinkSpeed < $linkSpeed) {
