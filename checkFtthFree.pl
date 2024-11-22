@@ -287,8 +287,8 @@ sub getOsName {
   return $n;
 }
 
-my %tcpConf;
-sub getTcpConf {
+my %netConf;
+sub getNetConf {
   if(MSWIN32) {
     my %NET_PROPERTIES=(
       TCPSetting => join(', ',(qw'AutoTuningLevelEffective AutoTuningLevelGroupPolicy AutoTuningLevelLocal CongestionProvider EcnCapability ScalingHeuristics Timestamps')),
@@ -298,26 +298,26 @@ sub getTcpConf {
         );
     my $defaultIp = $options{ipv6} ? '::0' : '0.0.0.0';
     my @netConfLines = `powershell.exe "\$ErrorActionPreference='silentlycontinue'; Get-NetTCPSetting Internet | Format-List -Property $NET_PROPERTIES{TCPSetting}; \$defaultInterfaceName=(Find-NetRoute -RemoteIpAddress $defaultIp)[0].InterfaceAlias; if(\$defaultInterfaceName -ne \$null) { Get-NetAdapter -Name \$defaultInterfaceName | Format-List -Property $NET_PROPERTIES{Adapter}; Get-NetAdapterHardwareInfo -Name \$defaultInterfaceName | Format-List -Property $NET_PROPERTIES{AdapterHardwareInfo}; (Get-NetIPConfiguration -Detailed -InterfaceAlias \$defaultInterfaceName).NetProfile | Format-List -Property $NET_PROPERTIES{Profile} }" 2>NUL`;
-    map {$tcpConf{$1}=$2 if(/^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/)} @netConfLines;
-    if(defined $tcpConf{AutoTuningLevelEffective}) {
-      if($tcpConf{AutoTuningLevelEffective} eq 'Local') {
-        delete $tcpConf{AutoTuningLevelGroupPolicy};
-        delete $tcpConf{AutoTuningLevelEffective};
-      }elsif($tcpConf{AutoTuningLevelEffective} eq 'GroupPolicy') {
-        delete $tcpConf{AutoTuningLevelLocal};
-        delete $tcpConf{AutoTuningLevelEffective};
+    map {$netConf{$1}=$2 if(/^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/)} @netConfLines;
+    if(defined $netConf{AutoTuningLevelEffective}) {
+      if($netConf{AutoTuningLevelEffective} eq 'Local') {
+        delete $netConf{AutoTuningLevelGroupPolicy};
+        delete $netConf{AutoTuningLevelEffective};
+      }elsif($netConf{AutoTuningLevelEffective} eq 'GroupPolicy') {
+        delete $netConf{AutoTuningLevelLocal};
+        delete $netConf{AutoTuningLevelEffective};
       }
     }
-    if(exists $tcpConf{DriverVersionString}) {
-      $tcpConf{DriverVersion}=delete $tcpConf{DriverVersionString};
+    if(exists $netConf{DriverVersionString}) {
+      $netConf{DriverVersion}=delete $netConf{DriverVersionString};
       my @driverVersionDetails;
-      map {push(@driverVersionDetails,delete $tcpConf{$_}) if(exists $tcpConf{$_})} (qw'DriverProvider DriverDate');
-      $tcpConf{DriverVersion}.=' ('.join(', ',@driverVersionDetails).')' if(@driverVersionDetails);
+      map {push(@driverVersionDetails,delete $netConf{$_}) if(exists $netConf{$_})} (qw'DriverProvider DriverDate');
+      $netConf{DriverVersion}.=' ('.join(', ',@driverVersionDetails).')' if(@driverVersionDetails);
     }
   }elsif(my $sysctlBin=findSysctlBin()) {
-    my @tcpConfFields;
+    my @netConfFields;
     if(LINUX) {
-      @tcpConfFields=qw'
+      @netConfFields=qw'
           net.core.default_qdisc
           net.core.rmem_max
           net.core.wmem_max
@@ -331,7 +331,7 @@ sub getTcpConf {
           net.ipv4.tcp_window_scaling
           net.ipv4.tcp_wmem';
     }else{
-      @tcpConfFields=qw'
+      @netConfFields=qw'
           kern.ipc.maxsockbuf
           net.inet.tcp.sendspace
           net.inet.tcp.recvspace
@@ -359,8 +359,8 @@ sub getTcpConf {
     }
     my @netConfLines=`$sysctlBin -a 2>/dev/null`;
     foreach my $line (@netConfLines) {
-      if($line =~ /^\s*([^:=]*[^\s:=])\s*[:=]\s*(.*[^\s])\s*$/ && (any {$1 eq $_} @tcpConfFields)) {
-        $tcpConf{$1}=$2;
+      if($line =~ /^\s*([^:=]*[^\s:=])\s*[:=]\s*(.*[^\s])\s*$/ && (any {$1 eq $_} @netConfFields)) {
+        $netConf{$1}=$2;
       }
     }
   }
@@ -382,205 +382,205 @@ sub findSysctlBin {
 }
 
 my ($rcvWindow,$rmemMaxParam,$rmemMaxValuePrefix,$tcpAdvWinScale,$sndWindow,$wmemMaxParam,$wmemMaxValuePrefix,$degradedTcpConf);
-sub tcpConfAnalysis {
-  if(%tcpConf) {
-    print "Paramétrage réseau actuel du système:\n";
-    map {print "  $_: $tcpConf{$_}\n"} (sort keys %tcpConf);
-    if(MSWIN32) {
-      if(defined $tcpConf{AutoTuningLevelLocal}) {
-        processWindowsAutoTuningLevel('AutoTuningLevelLocal');
-        if($tcpConf{AutoTuningLevelLocal} ne 'Normal') {
-          print "[!] La valeur actuelle de AutoTuningLevelLocal peut dégrader les performances\n";
-          if($options{suggestions}) {
-            print "    Recommandation: ajuster le paramètre avec l'une des deux commandes suivantes\n";
-            print "      [PowerShell] Set-NetTCPSetting -SettingName Internet -AutoTuningLevelLocal Normal\n";
-            print "      [cmd.exe] netsh interface tcp set global autotuninglevel=normal\n";
-          }
-        }
-      }elsif(defined $tcpConf{AutoTuningLevelGroupPolicy}) {
-        processWindowsAutoTuningLevel('AutoTuningLevelGroupPolicy');
-        if($tcpConf{AutoTuningLevelGroupPolicy} ne 'Normal') {
-          print "[!] La stratégie de groupe appliquée aux paramètres AutoTuningLevelEffective et AutoTuningLevelGroupPolicy peut dégrader les performances\n";
-          if($options{suggestions}) {
-            print "    Recommandation: effectuer l'une des deux actions suivantes\n";
-            print "      - configurer la valeur du paramètre AutoTuningLevelGroupPolicy à \"Normal\" dans la stratégie de groupe\n";
-            print "      - utiliser la configuration locale pour ce paramètre (configurer le valeur du paramètre AutoTuningLevelEffective à \"Local\")\n";
-          }
-        }
-      }
-      if(defined $tcpConf{ScalingHeuristics} && $tcpConf{ScalingHeuristics} ne 'Disabled') {
-        $degradedTcpConf=1;
-        print "[!] La valeur actuelle de ScalingHeuristics peut dégrader les performances\n";
+sub netConfAnalysis {
+  if(! %netConf) {
+    print "[!] Echec de lecture de la configuration réseau du système\n";
+    return;
+  }
+  print "Configuration réseau du système:\n";
+  map {print "  $_: $netConf{$_}\n"} (sort keys %netConf);
+  if(MSWIN32) {
+    if(defined $netConf{AutoTuningLevelLocal}) {
+      processWindowsAutoTuningLevel('AutoTuningLevelLocal');
+      if($netConf{AutoTuningLevelLocal} ne 'Normal') {
+        print "[!] La valeur actuelle de AutoTuningLevelLocal peut dégrader les performances\n";
         if($options{suggestions}) {
-          print "    Recommandation: ajuster le paramètre avec une des deux commandes suivantes\n";
-          print "      [PowerShell] Set-NetTCPSetting -SettingName Internet -ScalingHeuristics Disabled\n";
-          print "      [cmd.exe] netsh interface tcp set heuristics disabled\n";
+          print "    Recommandation: ajuster le paramètre avec l'une des deux commandes suivantes\n";
+          print "      [PowerShell] Set-NetTCPSetting -SettingName Internet -AutoTuningLevelLocal Normal\n";
+          print "      [cmd.exe] netsh interface tcp set global autotuninglevel=normal\n";
         }
       }
-      if(defined $tcpConf{LinkSpeed} && $tcpConf{LinkSpeed} ne 'Unknown'
-         && defined $tcpConf{PcieLinkSpeed} && $tcpConf{PcieLinkSpeed} ne 'Unknown'
-         && defined $tcpConf{PcieLinkWidth}) {
-        if($tcpConf{LinkSpeed} =~ /^(\d+) ([KMGT]?)bps$/) {
-          my ($linkSpeed,$unitPrefix)=($1,$2);
-          $linkSpeed*={K => 1E3, M => 1E6, G => 1E9, T => 1E12}->{$unitPrefix} if($unitPrefix);
-          if($tcpConf{PcieLinkSpeed} =~ /^(\d+(?:\.\d)?) GT\/s$/) {
-            my $pcieEfficiency;
-            if($1 < 8) {
-              $pcieEfficiency=4/5;
-            }elsif($1 < 64) {
-              $pcieEfficiency=64/65;
-            }else{
-              $pcieEfficiency=121/128;
-            }
-            my $pcieLinkSpeed = $1 * 1E9 * $pcieEfficiency;
-            if($tcpConf{PcieLinkWidth} =~ /^\d+$/) {
-              $pcieLinkSpeed*=$tcpConf{PcieLinkWidth};
-              if($pcieLinkSpeed < $linkSpeed) {
-                print "[!] La carte réseau utilise actuellement une interface PCI Express avec un taux de transfert ne permettant pas d'atteindre le débit maximum du lien réseau\n";
-                print "    Recommandation: connecter la carte réseau sur un autre slot PCI Express (consulter le manuel de la carte mère si besoin pour trouver un slot adéquat)\n"
-                    if($options{suggestions});
-              }
-            }else{
-              print "[!] Valeur de PcieLinkWidth non reconnue\n";
-            }
-          }else{
-            print "[!] Valeur de PcieLinkSpeed non reconnue\n";
-          }
-        }else{
-          print "[!] Valeur de LinkSpeed non reconnue\n";
+    }elsif(defined $netConf{AutoTuningLevelGroupPolicy}) {
+      processWindowsAutoTuningLevel('AutoTuningLevelGroupPolicy');
+      if($netConf{AutoTuningLevelGroupPolicy} ne 'Normal') {
+        print "[!] La stratégie de groupe appliquée aux paramètres AutoTuningLevelEffective et AutoTuningLevelGroupPolicy peut dégrader les performances\n";
+        if($options{suggestions}) {
+          print "    Recommandation: effectuer l'une des deux actions suivantes\n";
+          print "      - configurer la valeur du paramètre AutoTuningLevelGroupPolicy à \"Normal\" dans la stratégie de groupe\n";
+          print "      - utiliser la configuration locale pour ce paramètre (configurer le valeur du paramètre AutoTuningLevelEffective à \"Local\")\n";
         }
-      }
-    }elsif(LINUX) {
-      my $rmemMax;
-      if(defined $tcpConf{'net.core.rmem_max'}) {
-        if($tcpConf{'net.core.rmem_max'} =~ /^\s*(\d+)\s*$/) {
-          ($rmemMax,$rmemMaxParam)=($1,'net.core.rmem_max');
-        }else{
-          print "[!] Valeur de net.core.rmem_max non reconnue\n";
-        }
-      }
-      if(defined $tcpConf{'net.ipv4.tcp_rmem'}) {
-        if($tcpConf{'net.ipv4.tcp_rmem'} =~ /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/) {
-          ($rmemMax,$rmemMaxParam,$rmemMaxValuePrefix)=($3,'net.ipv4.tcp_rmem',"$1 $2 ");
-        }else{
-          print "[!] Valeur de net.ipv4.tcp_rmem non reconnue\n";
-        }
-      }
-      if(defined $tcpConf{'net.ipv4.tcp_adv_win_scale'}) {
-        if($tcpConf{'net.ipv4.tcp_adv_win_scale'} =~ /^\s*(-?\d+)\s*$/ && $&) {
-          $tcpAdvWinScale=$1;
-        }else{
-          print "[!] Valeur de net.ipv4.tcp_adv_win_scale non reconnue\n";
-        }
-      }
-      if(defined $rmemMax) {
-        if(defined $tcpAdvWinScale) {
-          my $overHeadFactor=2 ** abs($tcpAdvWinScale);
-          $rcvWindow=$rmemMax/$overHeadFactor;
-          $rcvWindow=$rmemMax-$rcvWindow if($tcpAdvWinScale > 0);
-        }else{
-          print "[!] Valeur de net.ipv4.tcp_adv_win_scale non trouvée\n";
-        }
-      }
-      my $wmemMax;
-      if(defined $tcpConf{'net.core.wmem_max'}) {
-        if($tcpConf{'net.core.wmem_max'} =~ /^\s*(\d+)\s*$/) {
-          ($wmemMax,$wmemMaxParam)=($1,'net.core.wmem_max');
-        }else{
-          print "[!] Valeur de net.core.wmem_max non reconnue\n";
-        }
-      }
-      if(defined $tcpConf{'net.ipv4.tcp_wmem'}) {
-        if($tcpConf{'net.ipv4.tcp_wmem'} =~ /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/) {
-          ($wmemMax,$wmemMaxParam,$wmemMaxValuePrefix)=($3,'net.ipv4.tcp_wmem',"$1 $2 ");
-        }else{
-          print "[!] Valeur de net.ipv4.tcp_wmem non reconnue\n";
-        }
-      }
-      $sndWindow=$wmemMax*$TCP_WMEM_SND_WINDOW_RATIO if(defined $wmemMax);
-    }else{
-      my %bsdParams;
-      if(defined $tcpConf{'kern.ipc.maxsockbuf'}) {
-        if($tcpConf{'kern.ipc.maxsockbuf'} =~ /^\s*(\d+)\s*$/) {
-          $bsdParams{maxsockbuf}=$1;
-        }else{
-          print "[!] Valeur de kern.ipc.maxsockbuf non reconnue\n";
-        }
-      }
-      foreach my $tcpParam (qw'recvbuf_auto doautorcvbuf sendbuf_auto doautosndbuf') {
-        my $fullParam='net.inet.tcp.'.$tcpParam;
-        if(defined $tcpConf{$fullParam}) {
-          if($tcpConf{$fullParam} =~ /^\s*([01])\s*$/) {
-            $bsdParams{$tcpParam}=$1;
-          }else{
-            print "[!] Valeur de $fullParam non reconnue\n";
-          }
-        }
-      }
-      foreach my $tcpParam (qw'recvbuf_max autorcvbufmax recvspace sendbuf_max autosndbufmax sendspace') {
-        my $fullParam='net.inet.tcp.'.$tcpParam;
-        if(defined $tcpConf{$fullParam}) {
-          if($tcpConf{$fullParam} =~ /^\s*(\d+)\s*$/) {
-            $bsdParams{$tcpParam}=$1;
-          }else{
-            print "[!] Valeur de $fullParam non reconnue\n";
-          }
-        }
-      }
-      if(defined $bsdParams{maxsockbuf} && defined $bsdParams{recvspace} && defined $bsdParams{sendspace} && $bsdParams{maxsockbuf} < $bsdParams{recvspace} + $bsdParams{sendspace}) {
-        $bsdParams{maxsockbuf}=$bsdParams{recvspace}+$bsdParams{sendspace};
-      }
-      my $recvBufMaxParam = defined $bsdParams{recvbuf_max} ? 'recvbuf_max' : defined $bsdParams{autorcvbufmax} ? 'autorcvbufmax' : undef;
-      my $sendBufMaxParam = defined $bsdParams{sendbuf_max} ? 'sendbuf_max' : defined $bsdParams{autosndbufmax} ? 'autosndbufmax' : undef;
-      my $recvBufAutoEnabled=$bsdParams{recvbuf_auto}//$bsdParams{doautorcvbuf};
-      $recvBufAutoEnabled//=1 if(defined $recvBufMaxParam);
-      my $sendBufAutoEnabled=$bsdParams{sendbuf_auto}//$bsdParams{doautosndbuf};
-      $sendBufAutoEnabled//=1 if(defined $sendBufMaxParam);
-      if($recvBufAutoEnabled) {
-        ($rmemMaxParam,$rcvWindow)=('kern.ipc.maxsockbuf',$bsdParams{maxsockbuf}-($bsdParams{sendspace}//0)) if(defined $bsdParams{maxsockbuf});
-        ($rmemMaxParam,$rcvWindow)=('net.inet.tcp.'.$recvBufMaxParam,$bsdParams{$recvBufMaxParam}) if(defined $recvBufMaxParam && (! defined $rcvWindow || $rcvWindow > $bsdParams{$recvBufMaxParam}));
-      }else{
-        ($rmemMaxParam,$rcvWindow)=('net.inet.tcp.recvspace',$bsdParams{recvspace}) if(defined $bsdParams{recvspace});
-      }
-      if($sendBufAutoEnabled) {
-        ($wmemMaxParam,$sndWindow)=('kern.ipc.maxsockbuf',$bsdParams{maxsockbuf}) if(defined $bsdParams{maxsockbuf});
-        ($wmemMaxParam,$sndWindow)=('net.inet.tcp.'.$sendBufMaxParam,$bsdParams{$sendBufMaxParam}) if(defined $sendBufMaxParam && (! defined $sndWindow || $sndWindow > $bsdParams{$sendBufMaxParam}));
-      }else{
-        ($wmemMaxParam,$sndWindow)=('net.inet.tcp.sendspace',$bsdParams{sendspace}) if(defined $bsdParams{sendspace});
       }
     }
-    if(defined $rcvWindow) {
-      my $maxRttMsFor1Gbps = int($rcvWindow * 1000 / $GOODPUT_1Gbps_Bytes + 0.5);
-      print "  => Latence TCP max pour une réception à 1 Gbps: ${maxRttMsFor1Gbps} ms\n";
-      if(! MSWIN32 && $maxRttMsFor1Gbps < $RECOMMENDED_MIN_RTT_MAX_FOR_FULL_BANDWIDTH) {
-        if(LINUX) {
-          if($tcpAdvWinScale < -3) {
-            print "[!] Les valeurs actuelles de net.ipv4.tcp_adv_win_scale et $rmemMaxParam peuvent dégrader les performances\n";
+    if(defined $netConf{ScalingHeuristics} && $netConf{ScalingHeuristics} ne 'Disabled') {
+      $degradedTcpConf=1;
+      print "[!] La valeur actuelle de ScalingHeuristics peut dégrader les performances\n";
+      if($options{suggestions}) {
+        print "    Recommandation: ajuster le paramètre avec une des deux commandes suivantes\n";
+        print "      [PowerShell] Set-NetTCPSetting -SettingName Internet -ScalingHeuristics Disabled\n";
+        print "      [cmd.exe] netsh interface tcp set heuristics disabled\n";
+      }
+    }
+    if(defined $netConf{LinkSpeed} && $netConf{LinkSpeed} ne 'Unknown'
+       && defined $netConf{PcieLinkSpeed} && $netConf{PcieLinkSpeed} ne 'Unknown'
+       && defined $netConf{PcieLinkWidth}) {
+      if($netConf{LinkSpeed} =~ /^(\d+) ([KMGT]?)bps$/) {
+        my ($linkSpeed,$unitPrefix)=($1,$2);
+        $linkSpeed*={K => 1E3, M => 1E6, G => 1E9, T => 1E12}->{$unitPrefix} if($unitPrefix);
+        if($netConf{PcieLinkSpeed} =~ /^(\d+(?:\.\d)?) GT\/s$/) {
+          my $pcieEfficiency;
+          if($1 < 8) {
+            $pcieEfficiency=4/5;
+          }elsif($1 < 64) {
+            $pcieEfficiency=64/65;
           }else{
-            print "[!] La valeur actuelle de $rmemMaxParam peut dégrader les performances\n";
-            if($options{suggestions}) {
-              print "    Recommandation: ajuster le paramètre avec la commande suivante\n";
-              print "      sysctl -w $rmemMaxParam=".rcvWindowToRmemValue($RECOMMENDED_MIN_RCV_WINDOW_SIZE)."\n";
-            }
+            $pcieEfficiency=121/128;
           }
+          my $pcieLinkSpeed = $1 * 1E9 * $pcieEfficiency;
+          if($netConf{PcieLinkWidth} =~ /^\d+$/) {
+            $pcieLinkSpeed*=$netConf{PcieLinkWidth};
+            if($pcieLinkSpeed < $linkSpeed) {
+              print "[!] La carte réseau utilise actuellement une interface PCI Express avec un taux de transfert ne permettant pas d'atteindre le débit maximum du lien réseau\n";
+              print "    Recommandation: connecter la carte réseau sur un autre slot PCI Express (consulter le manuel de la carte mère si besoin pour trouver un slot adéquat)\n"
+                  if($options{suggestions});
+            }
+          }else{
+            print "[!] Valeur de PcieLinkWidth non reconnue\n";
+          }
+        }else{
+          print "[!] Valeur de PcieLinkSpeed non reconnue\n";
+        }
+      }else{
+        print "[!] Valeur de LinkSpeed non reconnue\n";
+      }
+    }
+  }elsif(LINUX) {
+    my $rmemMax;
+    if(defined $netConf{'net.core.rmem_max'}) {
+      if($netConf{'net.core.rmem_max'} =~ /^\s*(\d+)\s*$/) {
+        ($rmemMax,$rmemMaxParam)=($1,'net.core.rmem_max');
+      }else{
+        print "[!] Valeur de net.core.rmem_max non reconnue\n";
+      }
+    }
+    if(defined $netConf{'net.ipv4.tcp_rmem'}) {
+      if($netConf{'net.ipv4.tcp_rmem'} =~ /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/) {
+        ($rmemMax,$rmemMaxParam,$rmemMaxValuePrefix)=($3,'net.ipv4.tcp_rmem',"$1 $2 ");
+      }else{
+        print "[!] Valeur de net.ipv4.tcp_rmem non reconnue\n";
+      }
+    }
+    if(defined $netConf{'net.ipv4.tcp_adv_win_scale'}) {
+      if($netConf{'net.ipv4.tcp_adv_win_scale'} =~ /^\s*(-?\d+)\s*$/ && $&) {
+        $tcpAdvWinScale=$1;
+      }else{
+        print "[!] Valeur de net.ipv4.tcp_adv_win_scale non reconnue\n";
+      }
+    }
+    if(defined $rmemMax) {
+      if(defined $tcpAdvWinScale) {
+        my $overHeadFactor=2 ** abs($tcpAdvWinScale);
+        $rcvWindow=$rmemMax/$overHeadFactor;
+        $rcvWindow=$rmemMax-$rcvWindow if($tcpAdvWinScale > 0);
+      }else{
+        print "[!] Valeur de net.ipv4.tcp_adv_win_scale non trouvée\n";
+      }
+    }
+    my $wmemMax;
+    if(defined $netConf{'net.core.wmem_max'}) {
+      if($netConf{'net.core.wmem_max'} =~ /^\s*(\d+)\s*$/) {
+        ($wmemMax,$wmemMaxParam)=($1,'net.core.wmem_max');
+      }else{
+        print "[!] Valeur de net.core.wmem_max non reconnue\n";
+      }
+    }
+    if(defined $netConf{'net.ipv4.tcp_wmem'}) {
+      if($netConf{'net.ipv4.tcp_wmem'} =~ /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/) {
+        ($wmemMax,$wmemMaxParam,$wmemMaxValuePrefix)=($3,'net.ipv4.tcp_wmem',"$1 $2 ");
+      }else{
+        print "[!] Valeur de net.ipv4.tcp_wmem non reconnue\n";
+      }
+    }
+    $sndWindow=$wmemMax*$TCP_WMEM_SND_WINDOW_RATIO if(defined $wmemMax);
+  }else{
+    my %bsdParams;
+    if(defined $netConf{'kern.ipc.maxsockbuf'}) {
+      if($netConf{'kern.ipc.maxsockbuf'} =~ /^\s*(\d+)\s*$/) {
+        $bsdParams{maxsockbuf}=$1;
+      }else{
+        print "[!] Valeur de kern.ipc.maxsockbuf non reconnue\n";
+      }
+    }
+    foreach my $tcpParam (qw'recvbuf_auto doautorcvbuf sendbuf_auto doautosndbuf') {
+      my $fullParam='net.inet.tcp.'.$tcpParam;
+      if(defined $netConf{$fullParam}) {
+        if($netConf{$fullParam} =~ /^\s*([01])\s*$/) {
+          $bsdParams{$tcpParam}=$1;
+        }else{
+          print "[!] Valeur de $fullParam non reconnue\n";
+        }
+      }
+    }
+    foreach my $tcpParam (qw'recvbuf_max autorcvbufmax recvspace sendbuf_max autosndbufmax sendspace') {
+      my $fullParam='net.inet.tcp.'.$tcpParam;
+      if(defined $netConf{$fullParam}) {
+        if($netConf{$fullParam} =~ /^\s*(\d+)\s*$/) {
+          $bsdParams{$tcpParam}=$1;
+        }else{
+          print "[!] Valeur de $fullParam non reconnue\n";
+        }
+      }
+    }
+    if(defined $bsdParams{maxsockbuf} && defined $bsdParams{recvspace} && defined $bsdParams{sendspace} && $bsdParams{maxsockbuf} < $bsdParams{recvspace} + $bsdParams{sendspace}) {
+      $bsdParams{maxsockbuf}=$bsdParams{recvspace}+$bsdParams{sendspace};
+    }
+    my $recvBufMaxParam = defined $bsdParams{recvbuf_max} ? 'recvbuf_max' : defined $bsdParams{autorcvbufmax} ? 'autorcvbufmax' : undef;
+    my $sendBufMaxParam = defined $bsdParams{sendbuf_max} ? 'sendbuf_max' : defined $bsdParams{autosndbufmax} ? 'autosndbufmax' : undef;
+    my $recvBufAutoEnabled=$bsdParams{recvbuf_auto}//$bsdParams{doautorcvbuf};
+    $recvBufAutoEnabled//=1 if(defined $recvBufMaxParam);
+    my $sendBufAutoEnabled=$bsdParams{sendbuf_auto}//$bsdParams{doautosndbuf};
+    $sendBufAutoEnabled//=1 if(defined $sendBufMaxParam);
+    if($recvBufAutoEnabled) {
+      ($rmemMaxParam,$rcvWindow)=('kern.ipc.maxsockbuf',$bsdParams{maxsockbuf}-($bsdParams{sendspace}//0)) if(defined $bsdParams{maxsockbuf});
+      ($rmemMaxParam,$rcvWindow)=('net.inet.tcp.'.$recvBufMaxParam,$bsdParams{$recvBufMaxParam}) if(defined $recvBufMaxParam && (! defined $rcvWindow || $rcvWindow > $bsdParams{$recvBufMaxParam}));
+    }else{
+      ($rmemMaxParam,$rcvWindow)=('net.inet.tcp.recvspace',$bsdParams{recvspace}) if(defined $bsdParams{recvspace});
+    }
+    if($sendBufAutoEnabled) {
+      ($wmemMaxParam,$sndWindow)=('kern.ipc.maxsockbuf',$bsdParams{maxsockbuf}) if(defined $bsdParams{maxsockbuf});
+      ($wmemMaxParam,$sndWindow)=('net.inet.tcp.'.$sendBufMaxParam,$bsdParams{$sendBufMaxParam}) if(defined $sendBufMaxParam && (! defined $sndWindow || $sndWindow > $bsdParams{$sendBufMaxParam}));
+    }else{
+      ($wmemMaxParam,$sndWindow)=('net.inet.tcp.sendspace',$bsdParams{sendspace}) if(defined $bsdParams{sendspace});
+    }
+  }
+  if(defined $rcvWindow) {
+    my $maxRttMsFor1Gbps = int($rcvWindow * 1000 / $GOODPUT_1Gbps_Bytes + 0.5);
+    print "  => Latence TCP max pour une réception à 1 Gbps: ${maxRttMsFor1Gbps} ms\n";
+    if(! MSWIN32 && $maxRttMsFor1Gbps < $RECOMMENDED_MIN_RTT_MAX_FOR_FULL_BANDWIDTH) {
+      if(LINUX) {
+        if($tcpAdvWinScale < -3) {
+          print "[!] Les valeurs actuelles de net.ipv4.tcp_adv_win_scale et $rmemMaxParam peuvent dégrader les performances\n";
         }else{
           print "[!] La valeur actuelle de $rmemMaxParam peut dégrader les performances\n";
+          if($options{suggestions}) {
+            print "    Recommandation: ajuster le paramètre avec la commande suivante\n";
+            print "      sysctl -w $rmemMaxParam=".rcvWindowToRmemValue($RECOMMENDED_MIN_RCV_WINDOW_SIZE)."\n";
+          }
         }
+      }else{
+        print "[!] La valeur actuelle de $rmemMaxParam peut dégrader les performances\n";
       }
     }
-    if(defined $sndWindow) {
-      my $maxRttMsFor700Mbps = int($sndWindow * 1000 / $GOODPUT_700Mbps_Bytes + 0.5);
-      print "  => Latence TCP max pour une émission à 700 Mbps: ${maxRttMsFor700Mbps} ms\n";
-      if($maxRttMsFor700Mbps < $RECOMMENDED_MIN_RTT_MAX_FOR_FULL_BANDWIDTH) {
-        print "[!] La valeur actuelle de $wmemMaxParam peut dégrader les performances\n";
-        if(LINUX && $options{suggestions}) {
-          print "    Recommandation: ajuster le paramètre avec la commande suivante\n";
-          print "      sysctl -w $wmemMaxParam=".sndWindowToWmemValue($RECOMMENDED_MIN_SND_WINDOW_SIZE)."\n";
-        }
+  }
+  if(defined $sndWindow) {
+    my $maxRttMsFor700Mbps = int($sndWindow * 1000 / $GOODPUT_700Mbps_Bytes + 0.5);
+    print "  => Latence TCP max pour une émission à 700 Mbps: ${maxRttMsFor700Mbps} ms\n";
+    if($maxRttMsFor700Mbps < $RECOMMENDED_MIN_RTT_MAX_FOR_FULL_BANDWIDTH) {
+      print "[!] La valeur actuelle de $wmemMaxParam peut dégrader les performances\n";
+      if(LINUX && $options{suggestions}) {
+        print "    Recommandation: ajuster le paramètre avec la commande suivante\n";
+        print "      sysctl -w $wmemMaxParam=".sndWindowToWmemValue($RECOMMENDED_MIN_SND_WINDOW_SIZE)."\n";
       }
     }
-  }else{
-    print "[!] Echec de lecture des paramètres réseau du système\n";
   }
 }
 
@@ -591,7 +591,7 @@ my %windowsAutoTuningLevels=(Disabled => 0,
                              Experimental => 14);
 sub processWindowsAutoTuningLevel {
   my $autoTuningParam=shift;
-  my $autoTuningLevel=$tcpConf{$autoTuningParam};
+  my $autoTuningLevel=$netConf{$autoTuningParam};
   if(exists $windowsAutoTuningLevels{$autoTuningLevel}) {
     $rcvWindow=65535*2**$windowsAutoTuningLevels{$autoTuningLevel};
   }else{
@@ -687,7 +687,7 @@ sub getTestData {
     if($mode eq 'download') {
       $testDescription.="[$cca]";
     }else{
-      my $uploadCca=uc($tcpConf{CongestionProvider}//$tcpConf{'net.ipv4.tcp_congestion_control'}//'?');
+      my $uploadCca=uc($netConf{CongestionProvider}//$netConf{'net.ipv4.tcp_congestion_control'}//'?');
       $testDescription.="[$uploadCca]";
     }
   }
@@ -964,9 +964,9 @@ print "\n";
 printHeaderLine();
 printTimestampLine();
 if(! $options{'skip-net-conf'}) {
-  getTcpConf();
+  getNetConf();
   if(! $options{quiet}) {
-    tcpConfAnalysis();
+    netConfAnalysis();
     $crNeeded=1;
   }
 }
