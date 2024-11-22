@@ -292,6 +292,7 @@ my %WIN32_TCP_SETTINGS = map {$_ => 1} (qw'AutoTuningLevelEffective AutoTuningLe
 sub getNetConf {
   if(MSWIN32) {
     my $TCP_PROPERTIES=join(', ',keys %WIN32_TCP_SETTINGS);
+    my $NET_ADAPTER_ADVANCED_PROPERTIES=join(', ',(qw'EEE FlowControl InterruptModeration IPChecksumOffloadIPv4 JumboPacket LsoV1IPv4 LsoV2IPv4 LsoV2IPv6 LSOv2IPv4 LSOv2IPv6 PacketCoalescing ReceiveBuffers RscIPv4 RscIPv6 SpeedDuplex TCPChecksumOffloadIPv4 TCPChecksumOffloadIPv6 TCPConnectionOffloadIPv4 TCPConnectionOffloadIPv6 TCPUDPChecksumOffloadIPv4 TCPUDPChecksumOffloadIPv6 TransmitBuffers'));
     my $defaultIp = $options{ipv6} ? '::0' : '0.0.0.0';
     my $powershellScript = (<<"END_OF_POWERSHELL_SCRIPT" =~ s/\n//gr);
 \$ErrorActionPreference='silentlycontinue';
@@ -303,6 +304,10 @@ Get-NetTCPSetting Internet | Format-List -Property $TCP_PROPERTIES;
 if(\$defaultInterfaceName -ne \$null) {
 
   Get-NetAdapter -Name \$defaultInterfaceName | Format-List -Property LinkSpeed, PhysicalMediaType, DriverDescription, DriverProvider, DriverVersionString, DriverDate;
+
+  \$advancedProperties = New-Object PSObject;
+  Get-NetAdapterAdvancedProperty -Name \$defaultInterfaceName | Where-Object -Property RegistryKeyword -Match '^\\*' | ForEach-Object { \$advancedProperties | Add-Member -MemberType NoteProperty -Name (\$_.RegistryKeyword).substring(1) -Value \$_.DisplayValue };
+  \$advancedProperties | Format-List -Property $NET_ADAPTER_ADVANCED_PROPERTIES;
 
   Get-NetAdapterHardwareInfo -Name \$defaultInterfaceName | Format-List -Property PcieLinkSpeed, PcieLinkWidth;
 
@@ -328,6 +333,17 @@ END_OF_POWERSHELL_SCRIPT
       my @driverVersionDetails;
       map {push(@driverVersionDetails,delete $netConf{$_}) if(exists $netConf{$_})} (qw'DriverProvider DriverDate');
       $netConf{DriverVersion}.=' ('.join(', ',@driverVersionDetails).')' if(@driverVersionDetails);
+    }
+    $netConf{JumboPacket}='Disabled'
+        if(exists $netConf{JumboPacket} && $netConf{JumboPacket} eq '1514');
+    my @ipVersionedParams;
+    map  {push(@ipVersionedParams,$1) if(/^(.+)IPv4$/)} (keys %netConf);
+    foreach my $ipVersionedParam (@ipVersionedParams) {
+      my ($ipv4Param,$ipv6Param) = map {$ipVersionedParam.$_} (qw'IPv4 IPv6');
+      if(exists $netConf{$ipv6Param} && $netConf{$ipv4Param} eq $netConf{$ipv6Param}) {
+        $netConf{$ipVersionedParam} = delete $netConf{$ipv4Param};
+        delete $netConf{$ipv6Param};
+      }
     }
   }elsif(my $sysctlBin=findSysctlBin()) {
     my @netConfFields;
