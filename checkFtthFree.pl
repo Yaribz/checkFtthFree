@@ -289,6 +289,7 @@ sub getOsName {
 
 my %netConf;
 my %WIN32_TCP_SETTINGS = map {$_ => 1} (qw'AutoTuningLevelEffective AutoTuningLevelGroupPolicy AutoTuningLevelLocal CongestionProvider EcnCapability ScalingHeuristics Timestamps');
+my %win32netAdapterStats;
 sub getNetConf {
   if(MSWIN32) {
     my $TCP_PROPERTIES=join(', ',keys %WIN32_TCP_SETTINGS);
@@ -313,10 +314,20 @@ if(\$defaultInterfaceName -ne \$null) {
 
   Get-NetConnectionProfile -InterfaceAlias \$defaultInterfaceName | Format-List -Property NetworkCategory;
 
+  \$netAdapterStats=Get-NetAdapterStatistics -Name \$defaultInterfaceName;
+
+  if(\$netAdapterStats -ne \$null) {
+    \$netAdapterStats | Format-List -Property OutboundDiscardedPackets, OutboundPacketErrors, ReceivedDiscardedPackets, ReceivedPacketErrors;
+    \$netAdapterStats | Select-Object -ExpandProperty RscStatistics | Format-List -Property CoalescingExceptions;
+  }
+
 }
 END_OF_POWERSHELL_SCRIPT
     my @netConfLines = `powershell.exe "$powershellScript" 2>NUL`;
     map {$netConf{$1}=$2 if(/^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/)} @netConfLines;
+    foreach my $netAdapterStat (qw'OutboundDiscardedPackets OutboundPacketErrors ReceivedDiscardedPackets ReceivedPacketErrors CoalescingExceptions') {
+      $win32netAdapterStats{$netAdapterStat} = delete $netConf{$netAdapterStat} if(exists $netConf{$netAdapterStat});
+    }
     if(defined $netConf{AutoTuningLevelEffective}) {
       if($netConf{AutoTuningLevelEffective} eq 'Local') {
         delete $netConf{AutoTuningLevelGroupPolicy};
@@ -665,6 +676,28 @@ sub sndWindowToWmemValue {
 }
 
 sub fixMemSize { return POSIX::ceil($_[0]/POSIX::BUFSIZ())*POSIX::BUFSIZ() }
+
+sub checkNetAdapterStats {
+  return unless(MSWIN32 && %win32netAdapterStats);
+  my $defaultIp = $options{ipv6} ? '::0' : '0.0.0.0';
+  my $powershellScript = (<<"END_OF_POWERSHELL_SCRIPT" =~ s/\n//gr);
+\$ErrorActionPreference='silentlycontinue';
+
+\$netAdapterStats=Get-NetAdapterStatistics -Name (Find-NetRoute -RemoteIpAddress $defaultIp)[0].InterfaceAlias;
+
+if(\$netAdapterStats -ne \$null) {
+  \$netAdapterStats | Format-List -Property OutboundDiscardedPackets, OutboundPacketErrors, ReceivedDiscardedPackets, ReceivedPacketErrors;
+  \$netAdapterStats | Select-Object -ExpandProperty RscStatistics | Format-List -Property CoalescingExceptions;
+}
+END_OF_POWERSHELL_SCRIPT
+  my @statLines = `powershell.exe "$powershellScript" 2>NUL`;
+  my %newStats;
+  map {$newStats{$1}=$2 if(/^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/)} @statLines;
+  foreach my $stat (sort keys %newStats) {
+    printDiag("[!] Le compteur \"$stat\" de l'interface réseau a été incrémenté de ".($newStats{$stat}-$win32netAdapterStats{$stat})." pendant les tests.")
+        if(exists $win32netAdapterStats{$stat} && $newStats{$stat} > $win32netAdapterStats{$stat});
+  }
+}
 
 sub testTcp {
   my ($type,$ipv,$mode,$as,$cca)=@_;
@@ -1053,7 +1086,10 @@ if(! $options{upload}) {
   }
 }
 
-quit() if($options{freebox});
+if($options{freebox}) {
+  checkNetAdapterStats() unless($options{quiet});
+  quit();
+}
 
 if($options{upload}) {
   print "\n" if($crNeeded);
@@ -1070,6 +1106,8 @@ if($options{upload}) {
 }
 
 quit() if($options{quiet});
+
+checkNetAdapterStats();
 
 my $isBusyHour;
 {
