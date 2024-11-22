@@ -288,10 +288,11 @@ sub getOsName {
 }
 
 my %netConf;
+my %WIN32_TCP_SETTINGS = map {$_ => 1} (qw'AutoTuningLevelEffective AutoTuningLevelGroupPolicy AutoTuningLevelLocal CongestionProvider EcnCapability ScalingHeuristics Timestamps');
 sub getNetConf {
   if(MSWIN32) {
     my %NET_PROPERTIES=(
-      TCPSetting => join(', ',(qw'AutoTuningLevelEffective AutoTuningLevelGroupPolicy AutoTuningLevelLocal CongestionProvider EcnCapability ScalingHeuristics Timestamps')),
+      TCPSetting => join(', ',keys %WIN32_TCP_SETTINGS),
       Adapter => join(', ',(qw'LinkSpeed PhysicalMediaType DriverDescription DriverProvider DriverVersionString DriverDate')),
       AdapterHardwareInfo => join(', ',(qw'PcieLinkSpeed PcieLinkWidth')),
       Profile => 'NetworkCategory',
@@ -308,6 +309,8 @@ sub getNetConf {
         delete $netConf{AutoTuningLevelEffective};
       }
     }
+    $netConf{Driver} = delete $netConf{DriverDescription}
+      if(exists $netConf{DriverDescription});
     if(exists $netConf{DriverVersionString}) {
       $netConf{DriverVersion}=delete $netConf{DriverVersionString};
       my @driverVersionDetails;
@@ -388,8 +391,17 @@ sub netConfAnalysis {
     return;
   }
   print "Configuration réseau du système:\n";
-  map {print "  $_: $netConf{$_}\n"} (sort keys %netConf);
   if(MSWIN32) {
+    my (%adapterConf,%tcpConf);
+    foreach my $param (keys %netConf) {
+      if($WIN32_TCP_SETTINGS{$param}) {
+        $tcpConf{$param}=$netConf{$param};
+      }else{
+        $adapterConf{$param}=$netConf{$param};
+      }
+    }
+    map {print "  Adapter.$_: $adapterConf{$_}\n"} (sort keys %adapterConf);
+    map {print "  Tcp.$_: $tcpConf{$_}\n"} (sort keys %tcpConf);
     if(defined $netConf{AutoTuningLevelLocal}) {
       processWindowsAutoTuningLevel('AutoTuningLevelLocal');
       if($netConf{AutoTuningLevelLocal} ne 'Normal') {
@@ -453,103 +465,106 @@ sub netConfAnalysis {
         print "[!] Valeur de LinkSpeed non reconnue\n";
       }
     }
-  }elsif(LINUX) {
-    my $rmemMax;
-    if(defined $netConf{'net.core.rmem_max'}) {
-      if($netConf{'net.core.rmem_max'} =~ /^\s*(\d+)\s*$/) {
-        ($rmemMax,$rmemMaxParam)=($1,'net.core.rmem_max');
-      }else{
-        print "[!] Valeur de net.core.rmem_max non reconnue\n";
-      }
-    }
-    if(defined $netConf{'net.ipv4.tcp_rmem'}) {
-      if($netConf{'net.ipv4.tcp_rmem'} =~ /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/) {
-        ($rmemMax,$rmemMaxParam,$rmemMaxValuePrefix)=($3,'net.ipv4.tcp_rmem',"$1 $2 ");
-      }else{
-        print "[!] Valeur de net.ipv4.tcp_rmem non reconnue\n";
-      }
-    }
-    if(defined $netConf{'net.ipv4.tcp_adv_win_scale'}) {
-      if($netConf{'net.ipv4.tcp_adv_win_scale'} =~ /^\s*(-?\d+)\s*$/ && $&) {
-        $tcpAdvWinScale=$1;
-      }else{
-        print "[!] Valeur de net.ipv4.tcp_adv_win_scale non reconnue\n";
-      }
-    }
-    if(defined $rmemMax) {
-      if(defined $tcpAdvWinScale) {
-        my $overHeadFactor=2 ** abs($tcpAdvWinScale);
-        $rcvWindow=$rmemMax/$overHeadFactor;
-        $rcvWindow=$rmemMax-$rcvWindow if($tcpAdvWinScale > 0);
-      }else{
-        print "[!] Valeur de net.ipv4.tcp_adv_win_scale non trouvée\n";
-      }
-    }
-    my $wmemMax;
-    if(defined $netConf{'net.core.wmem_max'}) {
-      if($netConf{'net.core.wmem_max'} =~ /^\s*(\d+)\s*$/) {
-        ($wmemMax,$wmemMaxParam)=($1,'net.core.wmem_max');
-      }else{
-        print "[!] Valeur de net.core.wmem_max non reconnue\n";
-      }
-    }
-    if(defined $netConf{'net.ipv4.tcp_wmem'}) {
-      if($netConf{'net.ipv4.tcp_wmem'} =~ /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/) {
-        ($wmemMax,$wmemMaxParam,$wmemMaxValuePrefix)=($3,'net.ipv4.tcp_wmem',"$1 $2 ");
-      }else{
-        print "[!] Valeur de net.ipv4.tcp_wmem non reconnue\n";
-      }
-    }
-    $sndWindow=$wmemMax*$TCP_WMEM_SND_WINDOW_RATIO if(defined $wmemMax);
   }else{
-    my %bsdParams;
-    if(defined $netConf{'kern.ipc.maxsockbuf'}) {
-      if($netConf{'kern.ipc.maxsockbuf'} =~ /^\s*(\d+)\s*$/) {
-        $bsdParams{maxsockbuf}=$1;
+    map {print "  $_: $netConf{$_}\n"} (sort keys %netConf);
+    if(LINUX) {
+      my $rmemMax;
+      if(defined $netConf{'net.core.rmem_max'}) {
+        if($netConf{'net.core.rmem_max'} =~ /^\s*(\d+)\s*$/) {
+          ($rmemMax,$rmemMaxParam)=($1,'net.core.rmem_max');
+        }else{
+          print "[!] Valeur de net.core.rmem_max non reconnue\n";
+        }
+      }
+      if(defined $netConf{'net.ipv4.tcp_rmem'}) {
+        if($netConf{'net.ipv4.tcp_rmem'} =~ /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/) {
+          ($rmemMax,$rmemMaxParam,$rmemMaxValuePrefix)=($3,'net.ipv4.tcp_rmem',"$1 $2 ");
+        }else{
+          print "[!] Valeur de net.ipv4.tcp_rmem non reconnue\n";
+        }
+      }
+      if(defined $netConf{'net.ipv4.tcp_adv_win_scale'}) {
+        if($netConf{'net.ipv4.tcp_adv_win_scale'} =~ /^\s*(-?\d+)\s*$/ && $&) {
+          $tcpAdvWinScale=$1;
+        }else{
+          print "[!] Valeur de net.ipv4.tcp_adv_win_scale non reconnue\n";
+        }
+      }
+      if(defined $rmemMax) {
+        if(defined $tcpAdvWinScale) {
+          my $overHeadFactor=2 ** abs($tcpAdvWinScale);
+          $rcvWindow=$rmemMax/$overHeadFactor;
+          $rcvWindow=$rmemMax-$rcvWindow if($tcpAdvWinScale > 0);
+        }else{
+          print "[!] Valeur de net.ipv4.tcp_adv_win_scale non trouvée\n";
+        }
+      }
+      my $wmemMax;
+      if(defined $netConf{'net.core.wmem_max'}) {
+        if($netConf{'net.core.wmem_max'} =~ /^\s*(\d+)\s*$/) {
+          ($wmemMax,$wmemMaxParam)=($1,'net.core.wmem_max');
+        }else{
+          print "[!] Valeur de net.core.wmem_max non reconnue\n";
+        }
+      }
+      if(defined $netConf{'net.ipv4.tcp_wmem'}) {
+        if($netConf{'net.ipv4.tcp_wmem'} =~ /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/) {
+          ($wmemMax,$wmemMaxParam,$wmemMaxValuePrefix)=($3,'net.ipv4.tcp_wmem',"$1 $2 ");
+        }else{
+          print "[!] Valeur de net.ipv4.tcp_wmem non reconnue\n";
+        }
+      }
+      $sndWindow=$wmemMax*$TCP_WMEM_SND_WINDOW_RATIO if(defined $wmemMax);
+    }else{
+      my %bsdParams;
+      if(defined $netConf{'kern.ipc.maxsockbuf'}) {
+        if($netConf{'kern.ipc.maxsockbuf'} =~ /^\s*(\d+)\s*$/) {
+          $bsdParams{maxsockbuf}=$1;
+        }else{
+          print "[!] Valeur de kern.ipc.maxsockbuf non reconnue\n";
+        }
+      }
+      foreach my $tcpParam (qw'recvbuf_auto doautorcvbuf sendbuf_auto doautosndbuf') {
+        my $fullParam='net.inet.tcp.'.$tcpParam;
+        if(defined $netConf{$fullParam}) {
+          if($netConf{$fullParam} =~ /^\s*([01])\s*$/) {
+            $bsdParams{$tcpParam}=$1;
+          }else{
+            print "[!] Valeur de $fullParam non reconnue\n";
+          }
+        }
+      }
+      foreach my $tcpParam (qw'recvbuf_max autorcvbufmax recvspace sendbuf_max autosndbufmax sendspace') {
+        my $fullParam='net.inet.tcp.'.$tcpParam;
+        if(defined $netConf{$fullParam}) {
+          if($netConf{$fullParam} =~ /^\s*(\d+)\s*$/) {
+            $bsdParams{$tcpParam}=$1;
+          }else{
+            print "[!] Valeur de $fullParam non reconnue\n";
+          }
+        }
+      }
+      if(defined $bsdParams{maxsockbuf} && defined $bsdParams{recvspace} && defined $bsdParams{sendspace} && $bsdParams{maxsockbuf} < $bsdParams{recvspace} + $bsdParams{sendspace}) {
+        $bsdParams{maxsockbuf}=$bsdParams{recvspace}+$bsdParams{sendspace};
+      }
+      my $recvBufMaxParam = defined $bsdParams{recvbuf_max} ? 'recvbuf_max' : defined $bsdParams{autorcvbufmax} ? 'autorcvbufmax' : undef;
+      my $sendBufMaxParam = defined $bsdParams{sendbuf_max} ? 'sendbuf_max' : defined $bsdParams{autosndbufmax} ? 'autosndbufmax' : undef;
+      my $recvBufAutoEnabled=$bsdParams{recvbuf_auto}//$bsdParams{doautorcvbuf};
+      $recvBufAutoEnabled//=1 if(defined $recvBufMaxParam);
+      my $sendBufAutoEnabled=$bsdParams{sendbuf_auto}//$bsdParams{doautosndbuf};
+      $sendBufAutoEnabled//=1 if(defined $sendBufMaxParam);
+      if($recvBufAutoEnabled) {
+        ($rmemMaxParam,$rcvWindow)=('kern.ipc.maxsockbuf',$bsdParams{maxsockbuf}-($bsdParams{sendspace}//0)) if(defined $bsdParams{maxsockbuf});
+        ($rmemMaxParam,$rcvWindow)=('net.inet.tcp.'.$recvBufMaxParam,$bsdParams{$recvBufMaxParam}) if(defined $recvBufMaxParam && (! defined $rcvWindow || $rcvWindow > $bsdParams{$recvBufMaxParam}));
       }else{
-        print "[!] Valeur de kern.ipc.maxsockbuf non reconnue\n";
+        ($rmemMaxParam,$rcvWindow)=('net.inet.tcp.recvspace',$bsdParams{recvspace}) if(defined $bsdParams{recvspace});
       }
-    }
-    foreach my $tcpParam (qw'recvbuf_auto doautorcvbuf sendbuf_auto doautosndbuf') {
-      my $fullParam='net.inet.tcp.'.$tcpParam;
-      if(defined $netConf{$fullParam}) {
-        if($netConf{$fullParam} =~ /^\s*([01])\s*$/) {
-          $bsdParams{$tcpParam}=$1;
-        }else{
-          print "[!] Valeur de $fullParam non reconnue\n";
-        }
+      if($sendBufAutoEnabled) {
+        ($wmemMaxParam,$sndWindow)=('kern.ipc.maxsockbuf',$bsdParams{maxsockbuf}) if(defined $bsdParams{maxsockbuf});
+        ($wmemMaxParam,$sndWindow)=('net.inet.tcp.'.$sendBufMaxParam,$bsdParams{$sendBufMaxParam}) if(defined $sendBufMaxParam && (! defined $sndWindow || $sndWindow > $bsdParams{$sendBufMaxParam}));
+      }else{
+        ($wmemMaxParam,$sndWindow)=('net.inet.tcp.sendspace',$bsdParams{sendspace}) if(defined $bsdParams{sendspace});
       }
-    }
-    foreach my $tcpParam (qw'recvbuf_max autorcvbufmax recvspace sendbuf_max autosndbufmax sendspace') {
-      my $fullParam='net.inet.tcp.'.$tcpParam;
-      if(defined $netConf{$fullParam}) {
-        if($netConf{$fullParam} =~ /^\s*(\d+)\s*$/) {
-          $bsdParams{$tcpParam}=$1;
-        }else{
-          print "[!] Valeur de $fullParam non reconnue\n";
-        }
-      }
-    }
-    if(defined $bsdParams{maxsockbuf} && defined $bsdParams{recvspace} && defined $bsdParams{sendspace} && $bsdParams{maxsockbuf} < $bsdParams{recvspace} + $bsdParams{sendspace}) {
-      $bsdParams{maxsockbuf}=$bsdParams{recvspace}+$bsdParams{sendspace};
-    }
-    my $recvBufMaxParam = defined $bsdParams{recvbuf_max} ? 'recvbuf_max' : defined $bsdParams{autorcvbufmax} ? 'autorcvbufmax' : undef;
-    my $sendBufMaxParam = defined $bsdParams{sendbuf_max} ? 'sendbuf_max' : defined $bsdParams{autosndbufmax} ? 'autosndbufmax' : undef;
-    my $recvBufAutoEnabled=$bsdParams{recvbuf_auto}//$bsdParams{doautorcvbuf};
-    $recvBufAutoEnabled//=1 if(defined $recvBufMaxParam);
-    my $sendBufAutoEnabled=$bsdParams{sendbuf_auto}//$bsdParams{doautosndbuf};
-    $sendBufAutoEnabled//=1 if(defined $sendBufMaxParam);
-    if($recvBufAutoEnabled) {
-      ($rmemMaxParam,$rcvWindow)=('kern.ipc.maxsockbuf',$bsdParams{maxsockbuf}-($bsdParams{sendspace}//0)) if(defined $bsdParams{maxsockbuf});
-      ($rmemMaxParam,$rcvWindow)=('net.inet.tcp.'.$recvBufMaxParam,$bsdParams{$recvBufMaxParam}) if(defined $recvBufMaxParam && (! defined $rcvWindow || $rcvWindow > $bsdParams{$recvBufMaxParam}));
-    }else{
-      ($rmemMaxParam,$rcvWindow)=('net.inet.tcp.recvspace',$bsdParams{recvspace}) if(defined $bsdParams{recvspace});
-    }
-    if($sendBufAutoEnabled) {
-      ($wmemMaxParam,$sndWindow)=('kern.ipc.maxsockbuf',$bsdParams{maxsockbuf}) if(defined $bsdParams{maxsockbuf});
-      ($wmemMaxParam,$sndWindow)=('net.inet.tcp.'.$sendBufMaxParam,$bsdParams{$sendBufMaxParam}) if(defined $sendBufMaxParam && (! defined $sndWindow || $sndWindow > $bsdParams{$sendBufMaxParam}));
-    }else{
-      ($wmemMaxParam,$sndWindow)=('net.inet.tcp.sendspace',$bsdParams{sendspace}) if(defined $bsdParams{sendspace});
     }
   }
   if(defined $rcvWindow) {
