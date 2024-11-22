@@ -291,14 +291,26 @@ my %netConf;
 my %WIN32_TCP_SETTINGS = map {$_ => 1} (qw'AutoTuningLevelEffective AutoTuningLevelGroupPolicy AutoTuningLevelLocal CongestionProvider EcnCapability ScalingHeuristics Timestamps');
 sub getNetConf {
   if(MSWIN32) {
-    my %NET_PROPERTIES=(
-      TCPSetting => join(', ',keys %WIN32_TCP_SETTINGS),
-      Adapter => join(', ',(qw'LinkSpeed PhysicalMediaType DriverDescription DriverProvider DriverVersionString DriverDate')),
-      AdapterHardwareInfo => join(', ',(qw'PcieLinkSpeed PcieLinkWidth')),
-      Profile => 'NetworkCategory',
-        );
+    my $TCP_PROPERTIES=join(', ',keys %WIN32_TCP_SETTINGS);
     my $defaultIp = $options{ipv6} ? '::0' : '0.0.0.0';
-    my @netConfLines = `powershell.exe "\$ErrorActionPreference='silentlycontinue'; Get-NetTCPSetting Internet | Format-List -Property $NET_PROPERTIES{TCPSetting}; \$defaultInterfaceName=(Find-NetRoute -RemoteIpAddress $defaultIp)[0].InterfaceAlias; if(\$defaultInterfaceName -ne \$null) { Get-NetAdapter -Name \$defaultInterfaceName | Format-List -Property $NET_PROPERTIES{Adapter}; Get-NetAdapterHardwareInfo -Name \$defaultInterfaceName | Format-List -Property $NET_PROPERTIES{AdapterHardwareInfo}; (Get-NetIPConfiguration -Detailed -InterfaceAlias \$defaultInterfaceName).NetProfile | Format-List -Property $NET_PROPERTIES{Profile} }" 2>NUL`;
+    my $powershellScript = (<<"END_OF_POWERSHELL_SCRIPT" =~ s/\n//gr);
+\$ErrorActionPreference='silentlycontinue';
+
+Get-NetTCPSetting Internet | Format-List -Property $TCP_PROPERTIES;
+
+\$defaultInterfaceName=(Find-NetRoute -RemoteIpAddress $defaultIp)[0].InterfaceAlias;
+
+if(\$defaultInterfaceName -ne \$null) {
+
+  Get-NetAdapter -Name \$defaultInterfaceName | Format-List -Property LinkSpeed, PhysicalMediaType, DriverDescription, DriverProvider, DriverVersionString, DriverDate;
+
+  Get-NetAdapterHardwareInfo -Name \$defaultInterfaceName | Format-List -Property PcieLinkSpeed, PcieLinkWidth;
+
+  Get-NetConnectionProfile -InterfaceAlias \$defaultInterfaceName | Format-List -Property NetworkCategory;
+
+}
+END_OF_POWERSHELL_SCRIPT
+    my @netConfLines = `powershell.exe "$powershellScript" 2>NUL`;
     map {$netConf{$1}=$2 if(/^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/)} @netConfLines;
     if(defined $netConf{AutoTuningLevelEffective}) {
       if($netConf{AutoTuningLevelEffective} eq 'Local') {
@@ -392,16 +404,19 @@ sub netConfAnalysis {
   }
   print "Configuration réseau du système:\n";
   if(MSWIN32) {
-    my (%adapterConf,%tcpConf);
+    my %prefixedConf;
     foreach my $param (keys %netConf) {
-      if($WIN32_TCP_SETTINGS{$param}) {
-        $tcpConf{$param}=$netConf{$param};
+      my $prefix;
+      if($param eq 'NetworkCategory') {
+        $prefix='NetProfile';
+      }elsif(exists $WIN32_TCP_SETTINGS{$param}) {
+        $prefix='Tcp';
       }else{
-        $adapterConf{$param}=$netConf{$param};
+        $prefix='Adapter';
       }
+      $prefixedConf{$prefix.'.'.$param}=$netConf{$param};
     }
-    map {print "  Adapter.$_: $adapterConf{$_}\n"} (sort keys %adapterConf);
-    map {print "  Tcp.$_: $tcpConf{$_}\n"} (sort keys %tcpConf);
+    map {print "  $_: $prefixedConf{$_}\n"} (sort keys %prefixedConf);
     if(defined $netConf{AutoTuningLevelLocal}) {
       processWindowsAutoTuningLevel('AutoTuningLevelLocal');
       if($netConf{AutoTuningLevelLocal} ne 'Normal') {
