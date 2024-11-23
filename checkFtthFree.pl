@@ -24,6 +24,7 @@ use strict;
 
 use utf8;
 
+use Encode ();
 use List::Util qw'any min sum0';
 use Time::HiRes qw'time sleep';
 
@@ -41,7 +42,7 @@ require Net::Ping;
 require POSIX;
 require Time::Piece;
 
-my $VERSION='0.19';
+my $VERSION='0.20';
 my $PROGRAM_NAME='checkFtthFree';
 
 my $IPV6_COMPAT=eval { require IO::Socket::IP; IO::Socket::IP->VERSION(0.25) };
@@ -102,15 +103,26 @@ my %cmdOptsAliases = map {$cmdOpts{$_}[1] => $_} (keys %cmdOpts);
 
 my $httpClient=HTTP::Tiny->new(proxy => undef, http_proxy => undef, https_proxy => undef);
 
+my ($WIN32_ACP_NB,$WIN32_OUTPUTCP);
 if(MSWIN32) {
   require Win32;
-  eval "use open ':std', OUT => ':encoding(cp'.Win32::GetConsoleOutputCP().')'";
+  ($WIN32_ACP_NB,$WIN32_OUTPUTCP)=(Win32::GetACP(),'cp'.Win32::GetConsoleOutputCP());
+  eval "use open ':std', OUT => ':encoding($WIN32_OUTPUTCP)'";
   if($@) {
     quit("Impossible de configurer l'encodage de la console Windows:\n$@");
   }
 }else{
   eval "use open ':std', ':encoding(utf8)'";
 }
+
+sub win32PowershellExec {
+  my $psCmd="powershell.exe \"$_[0]\" 2>NUL";
+  my $previousCP=Win32::GetConsoleCP();
+  Win32::SetConsoleCP($WIN32_ACP_NB); # Prevent powershell.exe from replacing current font when UTF-8 is used...
+  my @res = map {Encode::decode($WIN32_OUTPUTCP,$_)} (wantarray() ? `$psCmd` : scalar(`$psCmd`));
+  Win32::SetConsoleCP($previousCP);
+  return @res;
+};
 
 my %options;
 foreach my $arg (@ARGV) {
@@ -323,7 +335,7 @@ if(\$defaultInterfaceName -ne \$null) {
 
 }
 END_OF_POWERSHELL_SCRIPT
-    my @netConfLines = `powershell.exe "$powershellScript" 2>NUL`;
+    my @netConfLines = win32PowershellExec($powershellScript);
     map {$netConf{$1}=$2 if(/^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/)} @netConfLines;
     foreach my $netAdapterStat (qw'OutboundDiscardedPackets OutboundPacketErrors ReceivedDiscardedPackets ReceivedPacketErrors CoalescingExceptions') {
       $win32netAdapterStats{$netAdapterStat} = delete $netConf{$netAdapterStat} if(exists $netConf{$netAdapterStat});
@@ -690,7 +702,7 @@ if(\$netAdapterStats -ne \$null) {
   \$netAdapterStats | Select-Object -ExpandProperty RscStatistics | Format-List -Property CoalescingExceptions;
 }
 END_OF_POWERSHELL_SCRIPT
-  my @statLines = `powershell.exe "$powershellScript" 2>NUL`;
+  my @statLines = win32PowershellExec($powershellScript);
   my %newStats;
   map {$newStats{$1}=$2 if(/^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/)} @statLines;
   foreach my $stat (sort keys %newStats) {
