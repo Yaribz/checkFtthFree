@@ -382,6 +382,9 @@ END_OF_POWERSHELL_SCRIPT
     }else{
       @netConfFields=qw'
           kern.ipc.maxsockbuf
+          net.inet.ip.ifq.maxlen
+          net.inet.ip.intr_queue_maxlen
+          net.inet.ip.maxqueue
           net.inet.tcp.sendspace
           net.inet.tcp.recvspace
           net.inet.tcp.sendbuf_auto
@@ -404,7 +407,12 @@ END_OF_POWERSHELL_SCRIPT
           net.inet.tcp.functions_available
           net.inet.tcp.functions_default
           net.inet.tcp.cc.available
-          net.inet.tcp.cc.algorithm';
+          net.inet.tcp.cc.algorithm
+          net.inet6.ip6.ifq.maxlen
+          net.inet6.ip6.intr_queue_maxlen
+          net.link.generic.system.rcvq_maxlen
+          net.link.generic.system.sndq_maxlen
+          net.link.ifqmaxlen';
     }
     my @netConfLines=`$sysctlBin -a 2>/dev/null`;
     foreach my $line (@netConfLines) {
