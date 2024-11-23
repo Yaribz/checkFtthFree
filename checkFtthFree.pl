@@ -695,8 +695,18 @@ END_OF_POWERSHELL_SCRIPT
   my %newStats;
   map {$newStats{$1}=$2 if(/^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/)} @statLines;
   foreach my $stat (sort keys %newStats) {
-    print "[!] Le compteur \"$stat\" de l'interface réseau a été incrémenté de ".($newStats{$stat}-$win32netAdapterStats{$stat})." pendant le test.\n"
-        if(exists $win32netAdapterStats{$stat} && $newStats{$stat} > $win32netAdapterStats{$stat});
+    next unless(exists $win32netAdapterStats{$stat} && $newStats{$stat} > $win32netAdapterStats{$stat});
+    print "[!] Le compteur \"$stat\" de l'interface réseau a été incrémenté de ".($newStats{$stat}-$win32netAdapterStats{$stat})." pendant le test.\n";
+    if($options{suggestions}) {
+      if(substr($stat,8) eq 'DiscardedPackets') {
+        print '    Recommandation: augmenter la taille de la mémoire tampon '.(substr($stat,0,8) eq 'Received' ? 'de réception' : "d'envoi")." de l'interface réseau\n";
+      }else{
+        print "    Recommandations:\n";
+        print "      - vérifier qu'il n'existe pas un pilote plus récent pour la carte réseau\n";
+        print "      - s'assurer du bon fonctionnement du matériel utilisé en le remplaçant ou en l'essayant sur un autre système (câbles réseau, modules optiques, carte réseau, mémoire vive...)\n";
+        print "      - vérifier que les réglages réseau du système sont cohérents avec le reste de l'infrastructure (mode de gestion d'énergie de la carte réseau, mode duplex, MTU...)\n";
+      }
+    }
   }
   %win32netAdapterStats=%newStats;
 }
