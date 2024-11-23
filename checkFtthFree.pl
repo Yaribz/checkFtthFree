@@ -42,7 +42,7 @@ require Net::Ping;
 require POSIX;
 require Time::Piece;
 
-my $VERSION='0.21';
+my $VERSION='0.22';
 my $PROGRAM_NAME='checkFtthFree';
 
 my $IPV6_COMPAT=eval { require IO::Socket::IP; IO::Socket::IP->VERSION(0.25) };
@@ -326,18 +326,13 @@ if(\$defaultInterfaceName -ne \$null) {
 
   Get-NetConnectionProfile -InterfaceAlias \$defaultInterfaceName | Format-List -Property NetworkCategory;
 
-  \$netAdapterStats=Get-NetAdapterStatistics -Name \$defaultInterfaceName;
-
-  if(\$netAdapterStats -ne \$null) {
-    \$netAdapterStats | Format-List -Property OutboundDiscardedPackets, OutboundPacketErrors, ReceivedDiscardedPackets, ReceivedPacketErrors;
-    \$netAdapterStats | Select-Object -ExpandProperty RscStatistics | Format-List -Property CoalescingExceptions;
-  }
+  Get-NetAdapterStatistics -Name \$defaultInterfaceName | Format-List -Property OutboundDiscardedPackets, OutboundPacketErrors, ReceivedDiscardedPackets, ReceivedPacketErrors;
 
 }
 END_OF_POWERSHELL_SCRIPT
     my @netConfLines = win32PowershellExec($powershellScript);
     map {$netConf{$1}=$2 if(/^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/)} @netConfLines;
-    foreach my $netAdapterStat (qw'OutboundDiscardedPackets OutboundPacketErrors ReceivedDiscardedPackets ReceivedPacketErrors CoalescingExceptions') {
+    foreach my $netAdapterStat (qw'OutboundDiscardedPackets OutboundPacketErrors ReceivedDiscardedPackets ReceivedPacketErrors') {
       $win32netAdapterStats{$netAdapterStat} = delete $netConf{$netAdapterStat} if(exists $netConf{$netAdapterStat});
     }
     if(defined $netConf{AutoTuningLevelEffective}) {
@@ -694,13 +689,7 @@ sub checkNetAdapterStats {
   my $defaultIp = $options{ipv6} ? '::0' : '0.0.0.0';
   my $powershellScript = (<<"END_OF_POWERSHELL_SCRIPT" =~ s/\n//gr);
 \$ErrorActionPreference='silentlycontinue';
-
-\$netAdapterStats=Get-NetAdapterStatistics -Name (Find-NetRoute -RemoteIpAddress $defaultIp)[0].InterfaceAlias;
-
-if(\$netAdapterStats -ne \$null) {
-  \$netAdapterStats | Format-List -Property OutboundDiscardedPackets, OutboundPacketErrors, ReceivedDiscardedPackets, ReceivedPacketErrors;
-  \$netAdapterStats | Select-Object -ExpandProperty RscStatistics | Format-List -Property CoalescingExceptions;
-}
+Get-NetAdapterStatistics -Name (Find-NetRoute -RemoteIpAddress $defaultIp)[0].InterfaceAlias | Format-List -Property OutboundDiscardedPackets, OutboundPacketErrors, ReceivedDiscardedPackets, ReceivedPacketErrors;
 END_OF_POWERSHELL_SCRIPT
   my @statLines = win32PowershellExec($powershellScript);
   my %newStats;
