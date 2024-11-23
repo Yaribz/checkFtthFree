@@ -42,7 +42,7 @@ require Net::Ping;
 require POSIX;
 require Time::Piece;
 
-my $VERSION='0.20';
+my $VERSION='0.21';
 my $PROGRAM_NAME='checkFtthFree';
 
 my $IPV6_COMPAT=eval { require IO::Socket::IP; IO::Socket::IP->VERSION(0.25) };
@@ -706,9 +706,10 @@ END_OF_POWERSHELL_SCRIPT
   my %newStats;
   map {$newStats{$1}=$2 if(/^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/)} @statLines;
   foreach my $stat (sort keys %newStats) {
-    printDiag("[!] Le compteur \"$stat\" de l'interface réseau a été incrémenté de ".($newStats{$stat}-$win32netAdapterStats{$stat})." pendant les tests.")
+    print "[!] Le compteur \"$stat\" de l'interface réseau a été incrémenté de ".($newStats{$stat}-$win32netAdapterStats{$stat})." pendant le test.\n"
         if(exists $win32netAdapterStats{$stat} && $newStats{$stat} > $win32netAdapterStats{$stat});
   }
+  %win32netAdapterStats=%newStats;
 }
 
 sub testTcp {
@@ -763,6 +764,8 @@ sub testTcp {
     my $dlSpeedRSD=sprintf('%.2f',sqrt($chunksSquaredDeviations/$totalChunksTime)*100/$chunksAvgSpeed);
     print "  --> Débit: ".readableSpeed($speed)."\t[fluctuation: ${dlSpeedRSD}%]\n";
   }
+  
+  checkNetAdapterStats() unless($options{quiet});
   
   return ($speed,$maxThroughput);
 }
@@ -1098,10 +1101,7 @@ if(! $options{upload}) {
   }
 }
 
-if($options{freebox}) {
-  checkNetAdapterStats() unless($options{quiet});
-  quit();
-}
+quit() if($options{freebox});
 
 if($options{upload}) {
   print "\n" if($crNeeded);
@@ -1118,8 +1118,6 @@ if($options{upload}) {
 }
 
 quit() if($options{quiet});
-
-checkNetAdapterStats();
 
 my $isBusyHour;
 {
