@@ -429,6 +429,7 @@ END_OF_POWERSHELL_SCRIPT
       @netConfFields=qw'
           net.core.default_qdisc
           net.core.netdev_budget
+          net.core.netdev_budget_usecs
           net.core.netdev_max_backlog
           net.core.rmem_max
           net.core.wmem_max
