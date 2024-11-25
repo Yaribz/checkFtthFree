@@ -368,10 +368,14 @@ END_OF_POWERSHELL_SCRIPT
     if(LINUX) {
       @netConfFields=qw'
           net.core.default_qdisc
+          net.core.netdev_budget
+          net.core.netdev_max_backlog
           net.core.rmem_max
           net.core.wmem_max
           net.ipv4.tcp_adv_win_scale
           net.ipv4.tcp_congestion_control
+          net.ipv4.tcp_dsack
+          net.ipv4.tcp_ecn
           net.ipv4.tcp_mem
           net.ipv4.tcp_no_metrics_save
           net.ipv4.tcp_rmem
@@ -408,6 +412,12 @@ END_OF_POWERSHELL_SCRIPT
           net.inet.tcp.functions_default
           net.inet.tcp.cc.available
           net.inet.tcp.cc.algorithm
+          net.inet.tcp.timestamps
+          net.inet.tcp.congctl.available
+          net.inet.tcp.congctl.selected
+          net.inet.tcp.reasslimit
+          net.inet.tcp.sack
+          net.inet.tcp.ecn
           net.inet6.ip6.ifq.maxlen
           net.inet6.ip6.intr_queue_maxlen
           net.link.generic.system.rcvq_maxlen
