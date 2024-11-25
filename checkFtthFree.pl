@@ -42,6 +42,24 @@ require Net::Ping;
 require POSIX;
 require Time::Piece;
 
+my ($SYSCTL_CMD_PATH,$IP_CMD_PATH,$ROUTE_CMD_PATH,$IFCONFIG_CMD_PATH);
+if(! MSWIN32) {
+  $SYSCTL_CMD_PATH=findCmd('sysctl');
+  if(LINUX) {
+    $IP_CMD_PATH=findCmd('ip');
+  }else{
+    ($ROUTE_CMD_PATH,$IFCONFIG_CMD_PATH)=(map {findCmd($_)} (qw'route ifconfig'))
+  }
+}
+sub findCmd {
+  my $cmd=shift;
+  foreach my $knownPath (map {$_.'/'.$cmd} (qw'/sbin /usr/sbin /bin /usr/bin')) {
+    return $knownPath if(-f $knownPath && -r _ && -x _);
+  }
+  require IPC::Cmd;
+  return IPC::Cmd::can_run($cmd);
+}
+
 my $VERSION='0.23';
 my $PROGRAM_NAME='checkFtthFree';
 
@@ -363,9 +381,51 @@ END_OF_POWERSHELL_SCRIPT
         delete $netConf{$ipv6Param};
       }
     }
-  }elsif(my $sysctlBin=findSysctlBin()) {
+  }elsif(defined $SYSCTL_CMD_PATH) {
     my @netConfFields;
     if(LINUX) {
+      if(defined $IP_CMD_PATH) {
+        my @ipCmdRes = $options{ipv6} ? `$IP_CMD_PATH -6 route show default 2>/dev/null` : `$IP_CMD_PATH -4 route show default 2>/dev/null`;
+        my $device;
+        foreach my $line (@ipCmdRes) {
+          if($line =~ /\sdev\s+([^\s\/]{1,15})\s/) {
+            $device=$1;
+            last;
+          }
+        }
+        if(defined $device) {
+          $netConf{link_dev}=$device;
+          my %devices=('' => $device);
+          my $activeSlaveFilePath="/sys/class/net/$device/bonding/active_slave";
+          if(-f $activeSlaveFilePath && -r _ && open(my $activeSlaveFh,'<',$activeSlaveFilePath)) {
+            my $activeDevice=<$activeSlaveFh>;
+            close($activeSlaveFh);
+            if(defined $activeDevice) {
+              chomp($activeDevice);
+              if($activeDevice ne '') {
+                $netConf{link_active_dev}=$activeDevice;
+                $devices{_active}=$activeDevice;
+              }
+            }
+          }
+          my %LINK_SETTINGS = map {$_ => 1} (qw'mtu qdisc qlen');
+          foreach my $devType (keys %devices) {
+            my $dev=$devices{$devType};
+            @ipCmdRes=`$IP_CMD_PATH link show $dev 2>/dev/null`;
+            foreach my $line (@ipCmdRes) {
+              next unless($line =~ /\s(mtu\s.*)$/);
+              my @linkSettings=split(/\s+/,$1);
+              last if(@linkSettings % 2);
+              for my $i (0..$#linkSettings/2) {
+                my ($linkSettingName,$linkSettingValue)=($linkSettings[$i*2],$linkSettings[$i*2+1]);
+                next unless($LINK_SETTINGS{$linkSettingName});
+                $netConf{"link${devType}_$linkSettingName"}=$linkSettingValue;
+              }
+              last;
+            }
+          }
+        }
+      }
       @netConfFields=qw'
           net.core.default_qdisc
           net.core.netdev_budget
@@ -384,6 +444,28 @@ END_OF_POWERSHELL_SCRIPT
           net.ipv4.tcp_window_scaling
           net.ipv4.tcp_wmem';
     }else{
+      if(defined $ROUTE_CMD_PATH) {
+        my @routeCmdRes = $options{ipv6} ? `$ROUTE_CMD_PATH -n get -inet6 default` : `$ROUTE_CMD_PATH -n get default`;
+        my $device;
+        foreach my $line (@routeCmdRes) {
+          if($line =~ /^\s*interface\s*:\s*([^\s\/]{1,15})\s*$/) {
+            $device=$1;
+            last;
+          }
+        }
+        if(defined $device) {
+          $netConf{link_dev}=$device;
+          if(defined $IFCONFIG_CMD_PATH) {
+            my @ifconfigCmdRes = `$IFCONFIG_CMD_PATH $device`;
+            foreach my $line (@ifconfigCmdRes) {
+              if($line =~ /\smtu\s(\d+)/) {
+                $netConf{link_mtu}=$1;
+                last;
+              }
+            }
+          }
+        }
+      }
       @netConfFields=qw'
           kern.ipc.maxsockbuf
           net.inet.ip.ifq.maxlen
@@ -424,28 +506,13 @@ END_OF_POWERSHELL_SCRIPT
           net.link.generic.system.sndq_maxlen
           net.link.ifqmaxlen';
     }
-    my @netConfLines=`$sysctlBin -a 2>/dev/null`;
+    my @netConfLines=`$SYSCTL_CMD_PATH -a 2>/dev/null`;
     foreach my $line (@netConfLines) {
       if($line =~ /^\s*([^:=]*[^\s:=])\s*[:=]\s*(.*[^\s])\s*$/ && (any {$1 eq $_} @netConfFields)) {
         $netConf{$1}=$2;
       }
     }
   }
-}
-
-sub findSysctlBin {
-  my $sysctlBin;
-  foreach my $knownPath (qw'/sbin/sysctl /usr/sbin/sysctl') {
-    if(-x $knownPath) {
-      $sysctlBin=$knownPath;
-      last;
-    }
-  }
-  if(! defined $sysctlBin) {
-    require IPC::Cmd;
-    $sysctlBin=IPC::Cmd::can_run('sysctl');
-  }
-  return $sysctlBin;
 }
 
 my ($rcvWindow,$rmemMaxParam,$rmemMaxValuePrefix,$tcpAdvWinScale,$sndWindow,$wmemMaxParam,$wmemMaxValuePrefix,$degradedTcpConf);
