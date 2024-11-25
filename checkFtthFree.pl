@@ -301,7 +301,7 @@ sub getOsName {
 
 my %netConf;
 my %WIN32_TCP_SETTINGS = map {$_ => 1} (qw'AutoTuningLevelEffective AutoTuningLevelGroupPolicy AutoTuningLevelLocal CongestionProvider EcnCapability ScalingHeuristics Timestamps');
-my %win32netAdapterStats;
+my %netAdapterErrors;
 sub getNetConf {
   if(MSWIN32) {
     my $TCP_PROPERTIES=join(', ',keys %WIN32_TCP_SETTINGS);
@@ -332,8 +332,8 @@ if(\$defaultInterfaceName -ne \$null) {
 END_OF_POWERSHELL_SCRIPT
     my @netConfLines = win32PowershellExec($powershellScript);
     map {$netConf{$1}=$2 if(/^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/)} @netConfLines;
-    foreach my $netAdapterStat (qw'OutboundDiscardedPackets OutboundPacketErrors ReceivedDiscardedPackets ReceivedPacketErrors') {
-      $win32netAdapterStats{$netAdapterStat} = delete $netConf{$netAdapterStat} if(exists $netConf{$netAdapterStat});
+    foreach my $netAdapterCounter (qw'OutboundDiscardedPackets OutboundPacketErrors ReceivedDiscardedPackets ReceivedPacketErrors') {
+      $netAdapterErrors{$netAdapterCounter} = delete $netConf{$netAdapterCounter} if(exists $netConf{$netAdapterCounter});
     }
     if(defined $netConf{AutoTuningLevelEffective}) {
       if($netConf{AutoTuningLevelEffective} eq 'Local') {
@@ -692,23 +692,23 @@ sub sndWindowToWmemValue {
 
 sub fixMemSize { return POSIX::ceil($_[0]/POSIX::BUFSIZ())*POSIX::BUFSIZ() }
 
-sub checkNetAdapterStats {
-  return unless(MSWIN32 && %win32netAdapterStats);
+sub checkNetAdapterErrors {
+  return unless(MSWIN32 && %netAdapterErrors);
   my $defaultIp = $options{ipv6} ? '::0' : '0.0.0.0';
   my $powershellScript = (<<"END_OF_POWERSHELL_SCRIPT" =~ s/\n//gr);
 \$ErrorActionPreference='silentlycontinue';
 Get-NetAdapterStatistics -Name (Find-NetRoute -RemoteIpAddress $defaultIp)[0].InterfaceAlias | Format-List -Property OutboundDiscardedPackets, OutboundPacketErrors, ReceivedDiscardedPackets, ReceivedPacketErrors;
 END_OF_POWERSHELL_SCRIPT
   my @statLines = win32PowershellExec($powershellScript);
-  my %newStats;
-  map {$newStats{$1}=$2 if(/^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/)} @statLines;
-  foreach my $stat (sort keys %newStats) {
-    next unless(exists $win32netAdapterStats{$stat} && $newStats{$stat} > $win32netAdapterStats{$stat});
-    print "[!] Le compteur \"$stat\" de l'interface réseau a été incrémenté de ".($newStats{$stat}-$win32netAdapterStats{$stat})." pendant le test.\n";
+  my %newErrorCounters;
+  map {$newErrorCounters{$1}=$2 if(/^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/)} @statLines;
+  foreach my $errorCounter (sort keys %newErrorCounters) {
+    next unless(exists $netAdapterErrors{$errorCounter} && $newErrorCounters{$errorCounter} > $netAdapterErrors{$errorCounter});
+    print "[!] Le compteur \"$errorCounter\" de l'interface réseau a été incrémenté de ".($newErrorCounters{$errorCounter}-$netAdapterErrors{$errorCounter})." pendant le test.\n";
     if($options{suggestions}) {
       print "    Recommandations:\n";
-      if(substr($stat,8) eq 'DiscardedPackets') {
-        print '      - augmenter la taille de la mémoire tampon '.(substr($stat,0,8) eq 'Received' ? 'de réception' : "d'envoi")." de l'interface réseau\n";
+      if(substr($errorCounter,8) eq 'DiscardedPackets') {
+        print '      - augmenter la taille de la mémoire tampon '.(substr($errorCounter,0,8) eq 'Received' ? 'de réception' : "d'envoi")." de l'interface réseau\n";
         print "      - vérifier qu'il n'existe pas un pilote plus récent ou plus adapté pour la carte réseau\n";
       }else{
         print "      - vérifier qu'il n'existe pas un pilote plus récent ou plus adapté pour la carte réseau\n";
@@ -717,7 +717,7 @@ END_OF_POWERSHELL_SCRIPT
       }
     }
   }
-  %win32netAdapterStats=%newStats;
+  %netAdapterErrors=%newErrorCounters;
 }
 
 sub testTcp {
@@ -773,7 +773,7 @@ sub testTcp {
     print "  --> Débit: ".readableSpeed($speed)."\t[fluctuation: ${dlSpeedRSD}%]\n";
   }
   
-  checkNetAdapterStats() unless($options{quiet});
+  checkNetAdapterErrors() unless($options{quiet});
   
   return ($speed,$maxThroughput);
 }
