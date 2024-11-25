@@ -426,6 +426,8 @@ END_OF_POWERSHELL_SCRIPT
           }
         }
       }
+      my $r_netErrors=linuxGetNetErrorCounters($netConf{link_active_dev} // $netConf{link_dev});
+      %netAdapterErrors=%{$r_netErrors};
       @netConfFields=qw'
           net.core.default_qdisc
           net.core.netdev_budget
@@ -514,6 +516,36 @@ END_OF_POWERSHELL_SCRIPT
       }
     }
   }
+}
+
+sub linuxGetNetErrorCounters {
+  my $dev=shift;
+  my %errorCounters;
+  if(defined $dev) {
+    my $devStatDir="/sys/class/net/$dev/statistics";
+    if(-d $devStatDir && -r _ && opendir(my $statDh,$devStatDir)) {
+      my @errorCounterNames = grep {(/_errors$/ || /_dropped$/ || $_ eq 'collisions') &&  -f "$devStatDir/$_" && -r _} readdir($statDh);
+      closedir($statDh);
+      foreach my $errorCounter (@errorCounterNames) {
+        my $counterFh;
+        next unless(open($counterFh,'<',"$devStatDir/$errorCounter"));
+        my $counterValue=<$counterFh>;
+        close($counterFh);
+        next unless(defined $counterValue && $counterValue =~ /^(\d+)/);
+        $errorCounters{$errorCounter}=$1;
+      }
+    }
+  }
+  my $softnetStatFile='/proc/net/softnet_stat';
+  if(-f $softnetStatFile && -r _ && open(my $softnetStatFh,'<',$softnetStatFile)) {
+    while(my $statLine=<$softnetStatFh>) {
+      next unless($statLine =~ /^[\da-fA-F]+\s+([\da-fA-F]+)\s+([\da-fA-F]+)/);
+      $errorCounters{rx_softnet_dropped}+=hex('0x'.$1);
+      $errorCounters{rx_softnet_squeezed}+=hex('0x'.$2);
+    }
+    close($softnetStatFh);
+  }
+  return \%errorCounters;
 }
 
 my ($rcvWindow,$rmemMaxParam,$rmemMaxValuePrefix,$tcpAdvWinScale,$sndWindow,$wmemMaxParam,$wmemMaxValuePrefix,$degradedTcpConf);
@@ -771,22 +803,34 @@ sub sndWindowToWmemValue {
 sub fixMemSize { return POSIX::ceil($_[0]/POSIX::BUFSIZ())*POSIX::BUFSIZ() }
 
 sub checkNetAdapterErrors {
-  return unless(MSWIN32 && %netAdapterErrors);
-  my $defaultIp = $options{ipv6} ? '::0' : '0.0.0.0';
-  my $powershellScript = (<<"END_OF_POWERSHELL_SCRIPT" =~ s/\n//gr);
+  return unless(%netAdapterErrors);
+  my %newErrorCounters;
+  if(MSWIN32) {
+    my $defaultIp = $options{ipv6} ? '::0' : '0.0.0.0';
+    my $powershellScript = (<<"END_OF_POWERSHELL_SCRIPT" =~ s/\n//gr);
 \$ErrorActionPreference='silentlycontinue';
 Get-NetAdapterStatistics -Name (Find-NetRoute -RemoteIpAddress $defaultIp)[0].InterfaceAlias | Format-List -Property OutboundDiscardedPackets, OutboundPacketErrors, ReceivedDiscardedPackets, ReceivedPacketErrors;
 END_OF_POWERSHELL_SCRIPT
-  my @statLines = win32PowershellExec($powershellScript);
-  my %newErrorCounters;
-  map {$newErrorCounters{$1}=$2 if(/^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/)} @statLines;
+    my @statLines = win32PowershellExec($powershellScript);
+    map {$newErrorCounters{$1}=$2 if(/^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/)} @statLines;
+  }else{
+    my $r_netErrors=linuxGetNetErrorCounters($netConf{link_active_dev} // $netConf{link_dev});
+    %newErrorCounters=%{$r_netErrors};
+  }
   foreach my $errorCounter (sort keys %newErrorCounters) {
     next unless(exists $netAdapterErrors{$errorCounter} && $newErrorCounters{$errorCounter} > $netAdapterErrors{$errorCounter});
-    print "[!] Le compteur \"$errorCounter\" de l'interface réseau a été incrémenté de ".($newErrorCounters{$errorCounter}-$netAdapterErrors{$errorCounter})." pendant le test.\n";
+    print "[!] Le compteur \"$errorCounter\" ".(substr($errorCounter,0,11) eq 'rx_softnet_' ? 'du noyau' : "de l'interface réseau")." a été incrémenté de ".($newErrorCounters{$errorCounter}-$netAdapterErrors{$errorCounter})." pendant le test.\n";
     if($options{suggestions}) {
       print "    Recommandations:\n";
-      if(substr($errorCounter,8) eq 'DiscardedPackets') {
-        print '      - augmenter la taille de la mémoire tampon '.(substr($errorCounter,0,8) eq 'Received' ? 'de réception' : "d'envoi")." de l'interface réseau\n";
+      if((MSWIN32 && substr($errorCounter,8) eq 'DiscardedPackets')
+         || (! MSWIN32 && ($errorCounter =~ /_dropped$/ || $errorCounter =~ /_missed_errors$/ || $errorCounter eq 'rx_softnet_squeezed'))) {
+        if($errorCounter eq 'rx_softnet_dropped') {
+          print "      - augmenter la taille maximum des files d'attente du noyau associées aux interfaces réseau (net.core.netdev_max_backlog)\n";
+        }elsif($errorCounter eq 'rx_softnet_squeezed') {
+          print "      - augmenter le nombre maximum de paquets réseau traités (net.core.netdev_budget) et/ou le temps maximum de traitement des paquets réseau (net.core.netdev_budget_usecs) par cycle de traitement du noyau\n";
+        }else{
+          print '      - augmenter la taille de la mémoire tampon '.(lc(substr($errorCounter,0,1)) eq 'r' ? 'de réception' : "d'envoi")." de l'interface réseau\n";
+        }
         print "      - vérifier qu'il n'existe pas un pilote plus récent ou plus adapté pour la carte réseau\n";
       }else{
         print "      - vérifier qu'il n'existe pas un pilote plus récent ou plus adapté pour la carte réseau\n";
