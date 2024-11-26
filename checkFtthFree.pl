@@ -42,11 +42,11 @@ require Net::Ping;
 require POSIX;
 require Time::Piece;
 
-my ($SYSCTL_CMD_PATH,$IP_CMD_PATH,$ROUTE_CMD_PATH,$IFCONFIG_CMD_PATH);
+my ($SYSCTL_CMD_PATH,$IP_CMD_PATH,$ETHTOOL_CMD_PATH,$ROUTE_CMD_PATH,$IFCONFIG_CMD_PATH);
 if(! MSWIN32) {
   $SYSCTL_CMD_PATH=findCmd('sysctl');
   if(LINUX) {
-    $IP_CMD_PATH=findCmd('ip');
+    ($IP_CMD_PATH,$ETHTOOL_CMD_PATH)=(map {findCmd($_)} (qw'ip ethtool'));
   }else{
     ($ROUTE_CMD_PATH,$IFCONFIG_CMD_PATH)=(map {findCmd($_)} (qw'route ifconfig'))
   }
@@ -413,6 +413,150 @@ END_OF_POWERSHELL_SCRIPT
               }
               last;
             }
+          }
+          if(defined $ETHTOOL_CMD_PATH) {
+            { # General info
+              @cmdOutputLines=`$ETHTOOL_CMD_PATH $devices{intf} 2>/dev/null`;
+              my %ETHTOOL_PARAM_MAPPING=(
+                speed => 'speed',
+                duplex => 'duplex',
+                'auto-negotiation' => 'autoneg',
+                port => 'port',
+                  );
+              foreach my $line (@cmdOutputLines) {
+                next unless($line =~ /^\s*([^:]*[^:\s])\s*:\s*(.*[^\s])\s*$/);
+                my ($lcParam,$val)=(lc($1),$2);
+                next unless(exists $ETHTOOL_PARAM_MAPPING{$lcParam});
+                $netConf{'link.'.$ETHTOOL_PARAM_MAPPING{$lcParam}}=$val;
+              }
+            }
+            { # Driver
+              @cmdOutputLines=`$ETHTOOL_CMD_PATH -i $devices{intf} 2>/dev/null`;
+              my %driverInfo;
+              foreach my $line (@cmdOutputLines) {
+                $driverInfo{lc($1)}=$2 if($line =~ /^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/);
+              }
+              if(exists $driverInfo{driver}) {
+                $netConf{'intf.driver'}=$driverInfo{driver};
+                $netConf{'intf.driver'}.=" $driverInfo{version}" if(exists $driverInfo{version});
+              }
+              $netConf{'intf.firmware-version'}=$driverInfo{'firmware-version'} if(exists $driverInfo{'firmware-version'});
+            }
+            { # Coalescing
+              @cmdOutputLines=`$ETHTOOL_CMD_PATH -c $devices{intf} 2>/dev/null`;
+              my ($adaptiveRx,$rxUsecs,$rxFrames,$adaptiveTx,$txUsecs,$txFrames);
+              foreach my $line (@cmdOutputLines) {
+                if($line =~ /^\s*adaptive[\- ]rx\s*:\s*([^\s]+)(?:\s+tx\s*:\s*([^\s]+))?\s*$/i) {
+                  $adaptiveRx=$1;
+                  $adaptiveTx=$2 if(defined $2);
+                }elsif($line =~ /^\s*adaptive[\- ]tx\s*:\s*([^\s]+)(?:\s+rx\s*:\s*([^\s]+))?\s*$/i) {
+                  $adaptiveTx=$1;
+                  $adaptiveRx=$2 if(defined $2);
+                }elsif($line =~ /^\s*rx[\- ]usecs\s*:\s*(\d+)\s*$/i) {
+                  $rxUsecs=$1;
+                }elsif($line =~ /^\s*tx[\- ]usecs\s*:\s*(\d+)\s*$/i) {
+                  $txUsecs=$1;
+                }elsif($line =~ /^\s*rx[\- ]frames\s*:\s*(\d+)\s*$/i) {
+                  $rxFrames=$1;
+                }elsif($line =~ /^\s*tx[\- ]frames\s*:\s*(\d+)\s*$/i) {
+                  $txFrames=$1;
+                }
+              }
+              if(defined $adaptiveRx && lc($adaptiveRx) eq 'on') {
+                $netConf{'intf.coalesce-rx'}='adaptive';
+              }else{
+                my @rxVals;
+                if(defined $adaptiveRx) {
+                  my $lcAdaptiveRx=lc($adaptiveRx);
+                  push(@rxVals,'adaptive='.$lcAdaptiveRx)
+                      unless(any {$lcAdaptiveRx eq $_} (qw'off n/a'));
+                }
+                push(@rxVals,$rxUsecs.' usecs') if(defined $rxUsecs);
+                push(@rxVals,$rxFrames.' frames') if(defined $rxFrames);
+                $netConf{'intf.coalesce-rx'}=join(' / ',@rxVals) if(@rxVals);
+              }
+              if(defined $adaptiveTx && lc($adaptiveTx) eq 'on') {
+                $netConf{'intf.coalesce-tx'}='adaptive';
+              }else{
+                my @txVals;
+                if(defined $adaptiveTx) {
+                  my $lcAdaptiveTx=lc($adaptiveTx);
+                  push(@txVals,'adaptive='.$lcAdaptiveTx)
+                      unless(any {$lcAdaptiveTx eq $_} (qw'off n/a'));
+                }
+                push(@txVals,$txUsecs.' usecs') if(defined $txUsecs);
+                push(@txVals,$txFrames.' frames') if(defined $txFrames);
+                $netConf{'intf.coalesce-tx'}=join(' / ',@txVals) if(@txVals);
+              }
+            }
+            { # Ring buffer
+              @cmdOutputLines=`$ETHTOOL_CMD_PATH -g $devices{intf} 2>/dev/null`;
+              my ($currentSection,%ringValues);
+              foreach my $line (@cmdOutputLines) {
+                if($line =~ /\smaximums\s*:\s*$/i) {
+                  $currentSection='max';
+                }elsif($line =~ /^current\s.*:\s*$/i) {
+                  $currentSection='current';
+                }elsif(defined $currentSection && $line =~ /^\s*([rt]x)\s*:\s*([^\s]+)\s*$/i) {
+                  $ringValues{uc($1)}{$currentSection}=$2;
+                }
+              }
+              if(exists $ringValues{RX} && exists $ringValues{RX}{current}) {
+                $netConf{'intf.ring-rx'}=$ringValues{RX}{current};
+                $netConf{'intf.ring-rx'}.=" (max: $ringValues{RX}{max})" if(exists $ringValues{RX}{max});
+              }
+              if(exists $ringValues{TX} && exists $ringValues{TX}{current}) {
+                $netConf{'intf.ring-tx'}=$ringValues{TX}{current};
+                $netConf{'intf.ring-tx'}.=" (max: $ringValues{TX}{max})" if(exists $ringValues{TX}{max});
+              }
+            }
+            { # Offloading and features
+              @cmdOutputLines=`$ETHTOOL_CMD_PATH -k $devices{intf} 2>/dev/null`;
+              my %ETHTOOL_PARAM_MAPPING=(
+                'rx-checksumming' => 'cksum_rx',
+                'tx-checksumming' => 'cksum_tx',
+                'tcp-segmentation-offload' => 'tso',
+                'generic-segmentation-offload' => 'gso',
+                'generic-receive-offload' => 'gro',
+                'large-receive-offload' => 'lro',
+                  );
+              my @offloaded;
+              foreach my $line (@cmdOutputLines) {
+                next unless($line =~ /^\s*([^:]*[^\s:])\s*:\s*([^\[]*[^\s\[])(?:\s+\[[^\]]*\])?\s*$/);
+                my $lcParam=lc($1);
+                if($lcParam eq 'scatter-gather') {
+                  $netConf{'intf.scatter-gather'}=$2;
+                }elsif(exists $ETHTOOL_PARAM_MAPPING{$lcParam}) {
+                  my ($lcVal,$mappedVal)=(lc($2),$ETHTOOL_PARAM_MAPPING{$lcParam});
+                  if($lcVal eq 'on') {
+                    push(@offloaded,'+'.$mappedVal);
+                  }elsif(any {$lcVal eq $_} (qw'off n/a')) {
+                    push(@offloaded,'-'.$mappedVal);
+                  }else{
+                    push(@offloaded,$mappedVal.'='.$2);
+                  }
+                }
+              }
+              $netConf{'intf.offload'}=join(' | ',@offloaded) if(@offloaded);
+            }
+          }
+          foreach my $linkParam (qw'duplex speed') {
+            my $fullParam='link.'.$linkParam;
+            next if(defined $netConf{$fullParam});
+            my $val=getFileFirstLine("/sys/class/net/$devices{intf}/$linkParam");
+            $netConf{$fullParam}=$val if(defined $val);
+          }
+          my %SYSCLASS_PARAM_MAPPING=(mtu => 'mtu', tx_queue_len => 'qlen');
+          foreach my $intfParam (keys %SYSCLASS_PARAM_MAPPING) {
+            my $fullParam='intf.'.$SYSCLASS_PARAM_MAPPING{$intfParam};
+            next if(defined $netConf{$fullParam});
+            my $val=getFileFirstLine("/sys/class/net/$devices{intf}/$intfParam");
+            $netConf{$fullParam}=$val if(defined $val);
+          }
+          my %SYSCLASS_DEVICE_PARAM_MAPPING=(current_link_speed => 'link_speed', current_link_width => 'link_width');
+          foreach my $intfParam (keys %SYSCLASS_DEVICE_PARAM_MAPPING) {
+            my $val=getFileFirstLine("/sys/class/net/$devices{intf}/device/$intfParam");
+            $netConf{'dev.'.$SYSCLASS_DEVICE_PARAM_MAPPING{$intfParam}}=$val if(defined $val);
           }
         }
       }
