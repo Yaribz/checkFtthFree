@@ -60,7 +60,7 @@ sub findCmd {
   return IPC::Cmd::can_run($cmd);
 }
 
-my $VERSION='0.23';
+my $VERSION='0.24';
 my $PROGRAM_NAME='checkFtthFree';
 
 my $IPV6_COMPAT=eval { require IO::Socket::IP; IO::Socket::IP->VERSION(0.25) };
@@ -385,9 +385,9 @@ END_OF_POWERSHELL_SCRIPT
     my @netConfFields;
     if(LINUX) {
       if(defined $IP_CMD_PATH) {
-        my @ipCmdRes = $options{ipv6} ? `$IP_CMD_PATH -6 route show default 2>/dev/null` : `$IP_CMD_PATH -4 route show default 2>/dev/null`;
+        my @cmdOutputLines = $options{ipv6} ? `$IP_CMD_PATH -6 route show default 2>/dev/null` : `$IP_CMD_PATH -4 route show default 2>/dev/null`;
         my $device;
-        foreach my $line (@ipCmdRes) {
+        foreach my $line (@cmdOutputLines) {
           if($line =~ /\sdev\s+([^\s\/]{1,15})\s/) {
             $device=$1;
             last;
@@ -411,8 +411,8 @@ END_OF_POWERSHELL_SCRIPT
           my %LINK_SETTINGS = map {$_ => 1} (qw'mtu qdisc qlen');
           foreach my $devType (keys %devices) {
             my $dev=$devices{$devType};
-            @ipCmdRes=`$IP_CMD_PATH link show $dev 2>/dev/null`;
-            foreach my $line (@ipCmdRes) {
+            @cmdOutputLines=`$IP_CMD_PATH link show $dev 2>/dev/null`;
+            foreach my $line (@cmdOutputLines) {
               next unless($line =~ /\s(mtu\s.*)$/);
               my @linkSettings=split(/\s+/,$1);
               last if(@linkSettings % 2);
@@ -448,9 +448,9 @@ END_OF_POWERSHELL_SCRIPT
           net.ipv4.tcp_wmem';
     }else{
       if(defined $ROUTE_CMD_PATH) {
-        my @routeCmdRes = $options{ipv6} ? `$ROUTE_CMD_PATH -n get -inet6 default` : `$ROUTE_CMD_PATH -n get default`;
+        my @cmdOutputLines = $options{ipv6} ? `$ROUTE_CMD_PATH -n get -inet6 default` : `$ROUTE_CMD_PATH -n get default`;
         my $device;
-        foreach my $line (@routeCmdRes) {
+        foreach my $line (@cmdOutputLines) {
           if($line =~ /^\s*interface\s*:\s*([^\s\/]{1,15})\s*$/) {
             $device=$1;
             last;
