@@ -396,17 +396,10 @@ END_OF_POWERSHELL_SCRIPT
         if(defined $device) {
           $netConf{link_dev}=$device;
           my %devices=('' => $device);
-          my $activeSlaveFilePath="/sys/class/net/$device/bonding/active_slave";
-          if(-f $activeSlaveFilePath && -r _ && open(my $activeSlaveFh,'<',$activeSlaveFilePath)) {
-            my $activeDevice=<$activeSlaveFh>;
-            close($activeSlaveFh);
-            if(defined $activeDevice) {
-              chomp($activeDevice);
-              if($activeDevice ne '') {
-                $netConf{link_active_dev}=$activeDevice;
-                $devices{_active}=$activeDevice;
-              }
-            }
+          my $activeDevice=getFileFirstLine("/sys/class/net/$device/bonding/active_slave");
+          if(defined $activeDevice) {
+            $netConf{link_active_dev}=$activeDevice;
+            $devices{_active}=$activeDevice;
           }
           my %LINK_SETTINGS = map {$_ => 1} (qw'mtu qdisc qlen');
           foreach my $devType (keys %devices) {
@@ -516,6 +509,18 @@ END_OF_POWERSHELL_SCRIPT
       }
     }
   }
+}
+
+sub getFileFirstLine {
+  my $filePath=shift;
+  my $fileHdl;
+  return unless(-f $filePath && -r _ && open($fileHdl,'<',$filePath));
+  my $content=<$fileHdl>;
+  close($fileHdl);
+  return unless(defined $content);
+  chomp($content);
+  return if($content eq '');
+  return $content;
 }
 
 sub linuxGetNetErrorCounters {
