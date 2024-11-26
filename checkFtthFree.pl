@@ -394,14 +394,11 @@ END_OF_POWERSHELL_SCRIPT
           }
         }
         if(defined $device) {
-          $netConf{link_dev}=$device;
-          my %devices=('' => $device);
+          my %devices=(intf => $device);
           my $activeDevice=getFileFirstLine("/sys/class/net/$device/bonding/active_slave");
-          if(defined $activeDevice) {
-            $netConf{link_active_dev}=$activeDevice;
-            $devices{_active}=$activeDevice;
-          }
-          my %LINK_SETTINGS = map {$_ => 1} (qw'mtu qdisc qlen');
+          %devices = (intf => $activeDevice, bonding => $device ) if(defined $activeDevice);
+          $netConf{$_.'.dev'}=$devices{$_} foreach(keys %devices);
+          my %INTF_SETTINGS = map {$_ => 1} (qw'mtu qdisc qlen');
           foreach my $devType (keys %devices) {
             my $dev=$devices{$devType};
             @cmdOutputLines=`$IP_CMD_PATH link show $dev 2>/dev/null`;
@@ -411,15 +408,15 @@ END_OF_POWERSHELL_SCRIPT
               last if(@linkSettings % 2);
               for my $i (0..$#linkSettings/2) {
                 my ($linkSettingName,$linkSettingValue)=($linkSettings[$i*2],$linkSettings[$i*2+1]);
-                next unless($LINK_SETTINGS{$linkSettingName});
-                $netConf{"link${devType}_$linkSettingName"}=$linkSettingValue;
+                next unless($INTF_SETTINGS{$linkSettingName});
+                $netConf{"$devType.$linkSettingName"}=$linkSettingValue;
               }
               last;
             }
           }
         }
       }
-      my $r_netErrors=linuxGetNetErrorCounters($netConf{link_active_dev} // $netConf{link_dev});
+      my $r_netErrors=linuxGetNetErrorCounters($netConf{'intf.dev'});
       %netAdapterErrors=%{$r_netErrors};
       @netConfFields=qw'
           net.core.default_qdisc
@@ -450,12 +447,12 @@ END_OF_POWERSHELL_SCRIPT
           }
         }
         if(defined $device) {
-          $netConf{link_dev}=$device;
+          $netConf{'intf.dev'}=$device;
           if(defined $IFCONFIG_CMD_PATH) {
             my @ifconfigCmdRes = `$IFCONFIG_CMD_PATH $device`;
             foreach my $line (@ifconfigCmdRes) {
               if($line =~ /\smtu\s(\d+)/) {
-                $netConf{link_mtu}=$1;
+                $netConf{'intf.mtu'}=$1;
                 last;
               }
             }
@@ -819,7 +816,7 @@ END_OF_POWERSHELL_SCRIPT
     my @statLines = win32PowershellExec($powershellScript);
     map {$newErrorCounters{$1}=$2 if(/^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/)} @statLines;
   }else{
-    my $r_netErrors=linuxGetNetErrorCounters($netConf{link_active_dev} // $netConf{link_dev});
+    my $r_netErrors=linuxGetNetErrorCounters($netConf{'intf.dev'});
     %newErrorCounters=%{$r_netErrors};
   }
   foreach my $errorCounter (sort keys %newErrorCounters) {
