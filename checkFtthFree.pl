@@ -29,6 +29,7 @@ use List::Util qw'any min sum0';
 use Time::HiRes qw'time sleep';
 
 use constant {
+  DARWIN => $^O eq 'darwin',
   LINUX => $^O eq 'linux',
   MSWIN32 => $^O eq 'MSWin32',
 };
@@ -593,13 +594,24 @@ END_OF_POWERSHELL_SCRIPT
         if(defined $device) {
           $netConf{'intf.dev'}=$device;
           if(defined $IFCONFIG_CMD_PATH) {
-            my @ifconfigCmdRes = `$IFCONFIG_CMD_PATH $device`;
+            my $ifConfigFlag = DARWIN ? '-v ' : '';
+            my @ifconfigCmdRes = `$IFCONFIG_CMD_PATH $ifConfigFlag$device`;
+            my %IFCONFIG_PARAM_MAPPING=(media => 'link.media', type => 'link.type', scheduler => 'intf.qdisc', 'link rate' => 'link.speed');
+            my (@enabledOpts,%enabledOptsDedup);
             foreach my $line (@ifconfigCmdRes) {
-              if($line =~ /\smtu\s(\d+)/) {
+              if(! exists $netConf{'intf.mtu'} && $line =~ /\smtu\s(\d+)/) {
                 $netConf{'intf.mtu'}=$1;
-                last;
+              }elsif($line =~ /^\s*(?:options|enabled|ec_enabled)\s*=\s*[\da-fA-F]+\s*<([^>]+)>\s*/) {
+                foreach my $opt (split(/,/,$1)) {
+                  next if(lc(substr($opt,0,5)) eq 'vlan_' || exists $enabledOptsDedup{$opt});
+                  $enabledOptsDedup{$opt}=1;
+                  push(@enabledOpts,$opt);
+                }
+              }elsif($line =~ /^\s*([\w ]*[^\s])\s*:\s*(.*[^\s])\s*$/ && exists $IFCONFIG_PARAM_MAPPING{$1}) {
+                $netConf{$IFCONFIG_PARAM_MAPPING{$1}}=$2;
               }
             }
+            $netConf{'intf.options'}=join(',',@enabledOpts) if(@enabledOpts);
           }
         }
       }
