@@ -525,7 +525,7 @@ END_OF_POWERSHELL_SCRIPT
                 next unless($line =~ /^\s*([^:]*[^\s:])\s*:\s*([^\[]*[^\s\[])(?:\s+\[[^\]]*\])?\s*$/);
                 my $lcParam=lc($1);
                 if($lcParam eq 'scatter-gather') {
-                  $netConf{'intf.scatter-gather'}=$2;
+                  $netConf{'intf.dma-sg'}=$2;
                 }elsif(exists $ETHTOOL_PARAM_MAPPING{$lcParam}) {
                   my ($lcVal,$mappedVal)=(lc($2),$ETHTOOL_PARAM_MAPPING{$lcParam});
                   if($lcVal eq 'on') {
