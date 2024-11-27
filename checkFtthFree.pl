@@ -32,6 +32,7 @@ use constant {
   DARWIN => $^O eq 'darwin',
   LINUX => $^O eq 'linux',
   MSWIN32 => $^O eq 'MSWin32',
+  OPENBSD => $^O eq 'openbsd',
 };
 
 require HTTP::Tiny;
@@ -43,13 +44,13 @@ require Net::Ping;
 require POSIX;
 require Time::Piece;
 
-my ($SYSCTL_CMD_PATH,$IP_CMD_PATH,$ETHTOOL_CMD_PATH,$ROUTE_CMD_PATH,$IFCONFIG_CMD_PATH);
+my ($SYSCTL_CMD_PATH,$IP_CMD_PATH,$ETHTOOL_CMD_PATH,$ROUTE_CMD_PATH,$IFCONFIG_CMD_PATH,$NETSTAT_CMD_PATH);
 if(! MSWIN32) {
   $SYSCTL_CMD_PATH=findCmd('sysctl');
   if(LINUX) {
     ($IP_CMD_PATH,$ETHTOOL_CMD_PATH)=(map {findCmd($_)} (qw'ip ethtool'));
   }else{
-    ($ROUTE_CMD_PATH,$IFCONFIG_CMD_PATH)=(map {findCmd($_)} (qw'route ifconfig'))
+    ($ROUTE_CMD_PATH,$IFCONFIG_CMD_PATH,$NETSTAT_CMD_PATH)=(map {findCmd($_)} (qw'route ifconfig netstat'))
   }
 }
 sub findCmd {
@@ -613,6 +614,8 @@ END_OF_POWERSHELL_SCRIPT
             }
             $netConf{'intf.options'}=join(',',@enabledOpts) if(@enabledOpts);
           }
+          my $r_intfErrors=bsdGetIntfErrorCounters($device);
+          %netAdapterErrors=%{$r_intfErrors};
         }
       }
       @netConfFields=qw'
@@ -706,6 +709,47 @@ sub linuxGetNetErrorCounters {
     close($softnetStatFh);
   }
   return \%errorCounters;
+}
+
+sub bsdGetIntfErrorCounters {
+  return {} unless(defined $NETSTAT_CMD_PATH);
+  my $dev=shift;
+  my $r_linkCounters=bsdGetLinkCounters($dev);
+  if(OPENBSD) {
+    my $r_linkErrorCounters=bsdGetLinkCounters($dev,'e');
+    $r_linkCounters->{$_}//=$r_linkErrorCounters->{$_} foreach(keys %{$r_linkErrorCounters});
+  }
+  my %errorCounters;
+  foreach my $counter (keys %{$r_linkCounters}) {
+    my $lcCounter=lc($counter);
+    next unless($counter =~ /^colls?$/i
+                || $counter =~ /^[io]?drops?$/i
+                || $counter =~ /^[io]errs$/i);
+    next unless($r_linkCounters->{$counter} =~ /^\d+$/);
+    $errorCounters{$counter}=$r_linkCounters->{$counter};
+  }
+  return \%errorCounters;
+}
+
+sub bsdGetLinkCounters {
+  my ($dev,$flag)=@_;
+  $flag//='d';
+  my @cmdOutputLines=`$NETSTAT_CMD_PATH -${flag}nI $dev 2>/dev/null`;
+  my @fieldNames;
+  foreach my $line (@cmdOutputLines) {
+    chomp($line);
+    next if($line =~ /^\s*$/);
+    if(@fieldNames) {
+      my @vals=split(/\s+/,$line);
+      my %data;
+      $data{$fieldNames[$_]}=$vals[$_] for(0..$#fieldNames);
+      next unless(exists $data{Network} && substr(lc($data{Network}),0,5) eq '<link');
+      return \%data;
+    }else{
+      @fieldNames=split(/\s+/,$line);
+    }
+  }
+  return {};
 }
 
 my ($rcvWindow,$rmemMaxParam,$rmemMaxValuePrefix,$tcpAdvWinScale,$sndWindow,$wmemMaxParam,$wmemMaxValuePrefix,$degradedTcpConf);
@@ -989,7 +1033,12 @@ END_OF_POWERSHELL_SCRIPT
     my @statLines = win32PowershellExec($powershellScript);
     map {$newErrorCounters{$1}=$2 if(/^\s*([^:]*[^\s:])\s*:\s*(.*[^\s])\s*$/)} @statLines;
   }else{
-    my $r_netErrors=linuxGetNetErrorCounters($netConf{'intf.dev'});
+    my $r_netErrors;
+    if(LINUX) {
+      $r_netErrors=linuxGetNetErrorCounters($netConf{'intf.dev'});
+    }else{
+      $r_netErrors=bsdGetIntfErrorCounters($netConf{'intf.dev'});
+    }
     %newErrorCounters=%{$r_netErrors};
   }
   foreach my $errorCounter (sort keys %newErrorCounters) {
@@ -998,13 +1047,17 @@ END_OF_POWERSHELL_SCRIPT
     if($options{suggestions}) {
       print "    Recommandations:\n";
       if((MSWIN32 && substr($errorCounter,8) eq 'DiscardedPackets')
-         || (! MSWIN32 && ($errorCounter =~ /_dropped$/ || $errorCounter =~ /_missed_errors$/ || $errorCounter eq 'rx_softnet_squeezed'))) {
+         || (LINUX && ($errorCounter =~ /_dropped$/ || $errorCounter =~ /_missed_errors$/ || $errorCounter eq 'rx_softnet_squeezed'))
+         || (! MSWIN32 && ! LINUX && $errorCounter =~ /^[io]?drops?$/i)) {
         if($errorCounter eq 'rx_softnet_dropped') {
           print "      - augmenter la taille maximum des files d'attente du noyau associées aux interfaces réseau (net.core.netdev_max_backlog)\n";
         }elsif($errorCounter eq 'rx_softnet_squeezed') {
           print "      - augmenter le nombre maximum de paquets réseau traités (net.core.netdev_budget) et/ou le temps maximum de traitement des paquets réseau (net.core.netdev_budget_usecs) par cycle de traitement du noyau\n";
         }else{
-          print '      - augmenter la taille de la mémoire tampon '.(lc(substr($errorCounter,0,1)) eq 'r' ? 'de réception' : "d'envoi")." de l'interface réseau\n";
+          my $counterFirstLetterLowerCase=lc(substr($errorCounter,0,1));
+          my $isReceiveCounter = $counterFirstLetterLowerCase eq ((MSWIN32 || LINUX) ? 'r' : 'i');
+          $isReceiveCounter=1 if(DARWIN && $counterFirstLetterLowerCase eq 'd');
+          print '      - augmenter la taille de la mémoire tampon '.($isReceiveCounter ? 'de réception' : "d'envoi")." de l'interface réseau\n";
         }
         print "      - vérifier qu'il n'existe pas un pilote plus récent ou plus adapté pour la carte réseau\n";
       }else{
