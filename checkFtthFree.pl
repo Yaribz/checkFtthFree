@@ -748,35 +748,7 @@ sub netConfAnalysis {
     if(defined $netConf{LinkSpeed} && $netConf{LinkSpeed} ne 'Unknown'
        && defined $netConf{PcieLinkSpeed} && $netConf{PcieLinkSpeed} ne 'Unknown'
        && defined $netConf{PcieLinkWidth}) {
-      if($netConf{LinkSpeed} =~ /^(\d+) ([KMGT]?)bps$/) {
-        my ($linkSpeed,$unitPrefix)=($1,$2);
-        $linkSpeed*={K => 1E3, M => 1E6, G => 1E9, T => 1E12}->{$unitPrefix} if($unitPrefix);
-        if($netConf{PcieLinkSpeed} =~ /^(\d+(?:\.\d)?) GT\/s$/) {
-          my $pcieEfficiency;
-          if($1 < 8) {
-            $pcieEfficiency=4/5;
-          }elsif($1 < 64) {
-            $pcieEfficiency=64/65;
-          }else{
-            $pcieEfficiency=121/128;
-          }
-          my $pcieLinkSpeed = $1 * 1E9 * $pcieEfficiency;
-          if($netConf{PcieLinkWidth} =~ /^\d+$/) {
-            $pcieLinkSpeed*=$netConf{PcieLinkWidth};
-            if($pcieLinkSpeed < $linkSpeed) {
-              print "[!] La carte réseau utilise actuellement une interface PCI Express avec un taux de transfert ne permettant pas d'atteindre le débit maximum du lien réseau\n";
-              print "    Recommandation: connecter la carte réseau sur un autre slot PCI Express (consulter le manuel de la carte mère si besoin pour trouver un slot adéquat)\n"
-                  if($options{suggestions});
-            }
-          }else{
-            print "[!] Valeur de PcieLinkWidth non reconnue\n";
-          }
-        }else{
-          print "[!] Valeur de PcieLinkSpeed non reconnue\n";
-        }
-      }else{
-        print "[!] Valeur de LinkSpeed non reconnue\n";
-      }
+      checkPcieLinkSpeedConsistency('LinkSpeed','PcieLinkSpeed','PcieLinkWidth');
     }
   }else{
     map {print "  $_: $netConf{$_}\n"} (sort keys %netConf);
@@ -828,6 +800,11 @@ sub netConfAnalysis {
         }
       }
       $sndWindow=$wmemMax*$TCP_WMEM_SND_WINDOW_RATIO if(defined $wmemMax);
+      if(exists $netConf{'link.speed'}
+         && exists $netConf{'dev.link_speed'} && $netConf{'dev.link_speed'} ne 'Unknown'
+         && exists $netConf{'dev.link_width'} && $netConf{'dev.link_width'}) {
+        checkPcieLinkSpeedConsistency('link.speed','dev.link_speed','dev.link_width');
+      }
     }else{
       my %bsdParams;
       if(defined $netConf{'kern.ipc.maxsockbuf'}) {
@@ -925,6 +902,44 @@ sub processWindowsAutoTuningLevel {
   }else{
     print "[!] Valeur de $autoTuningParam non reconnue\n";
     $degradedTcpConf=1;
+  }
+}
+
+sub checkPcieLinkSpeedConsistency {
+  my ($paramLinkSpeed,$paramPcieLinkSpeed,$paramPcieLinkWidth)=@_;
+  my $linkSpeed;
+  if($netConf{$paramLinkSpeed} =~ /^(\d+) ?([KMGT]?)b[p\/]s$/) {
+    $linkSpeed=$1;
+    my $unitPrefix=$2;
+    $linkSpeed*={K => 1E3, M => 1E6, G => 1E9, T => 1E12}->{$unitPrefix} if($unitPrefix);
+  }elsif(LINUX && $netConf{$paramLinkSpeed} =~ /^\d+$/) {
+    $linkSpeed = $netConf{$paramLinkSpeed} * 1E6;
+  }else{
+    print "[!] Valeur de $paramLinkSpeed non reconnue\n";
+    return;
+  }
+  if($netConf{$paramPcieLinkSpeed} !~ /^(\d+(?:\.\d)?) GT\/s/) {
+    print "[!] Valeur de $paramPcieLinkSpeed non reconnue\n";
+    return;
+  }
+  my $pcieEfficiency;
+  if($1 < 8) {
+    $pcieEfficiency=4/5;
+  }elsif($1 < 64) {
+    $pcieEfficiency=64/65;
+  }else{
+    $pcieEfficiency=121/128;
+  }
+  my $pcieLinkSpeed = $1 * 1E9 * $pcieEfficiency;
+  if($netConf{$paramPcieLinkWidth} !~ /^\d+$/) {
+    print "[!] Valeur de $paramPcieLinkWidth non reconnue\n";
+    return;
+  }
+  $pcieLinkSpeed*=$netConf{$paramPcieLinkWidth};
+  if($pcieLinkSpeed < $linkSpeed) {
+    print "[!] La carte réseau utilise actuellement une interface PCI Express avec un taux de transfert ne permettant pas d'atteindre le débit maximum du lien réseau\n";
+    print "    Recommandation: connecter la carte réseau sur un autre slot PCI Express (consulter le manuel de la carte mère si besoin pour trouver un slot adéquat)\n"
+        if($options{suggestions});
   }
 }
 
