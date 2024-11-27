@@ -637,6 +637,8 @@ END_OF_POWERSHELL_SCRIPT
           net.inet.tcp.reasslimit
           net.inet.tcp.sack
           net.inet.tcp.ecn
+          net.inet.tcp.ecn_initiate_out
+          net.inet.tcp.ecn_negotiate_in
           net.inet6.ip6.ifq.maxlen
           net.inet6.ip6.intr_queue_maxlen
           net.link.generic.system.rcvq_maxlen
