@@ -62,7 +62,7 @@ sub findCmd {
   return IPC::Cmd::can_run($cmd);
 }
 
-my $VERSION='0.24';
+my $VERSION='0.25';
 my $PROGRAM_NAME='checkFtthFree';
 
 my $IPV6_COMPAT=eval { require IO::Socket::IP; IO::Socket::IP->VERSION(0.25) };
@@ -721,7 +721,6 @@ sub bsdGetIntfErrorCounters {
   }
   my %errorCounters;
   foreach my $counter (keys %{$r_linkCounters}) {
-    my $lcCounter=lc($counter);
     next unless($counter =~ /^colls?$/i
                 || $counter =~ /^[io]?drops?$/i
                 || $counter =~ /^[io]errs$/i);
@@ -966,7 +965,7 @@ sub processWindowsAutoTuningLevel {
 sub checkPcieLinkSpeedConsistency {
   my ($paramLinkSpeed,$paramPcieLinkSpeed,$paramPcieLinkWidth)=@_;
   my $linkSpeed;
-  if($netConf{$paramLinkSpeed} =~ /^(\d+) ?([KMGT]?)b[p\/]s$/) {
+  if($netConf{$paramLinkSpeed} =~ /^(\d+(?:\.\d)?) ?([KMGT]?)b[p\/]s$/) {
     $linkSpeed=$1;
     my $unitPrefix=$2;
     $linkSpeed*={K => 1E3, M => 1E6, G => 1E9, T => 1E12}->{$unitPrefix} if($unitPrefix);
