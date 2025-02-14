@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 #
 # checkFtthFree
-# Copyright (C) 2023-2024 Yann Riou <yaribzh@gmail.com>
+# Copyright (C) 2023-2025 Yann Riou <yaribzh@gmail.com>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as published by
@@ -62,7 +62,7 @@ sub findCmd {
   return IPC::Cmd::can_run($cmd);
 }
 
-my $VERSION='0.25';
+my $VERSION='0.26';
 my $PROGRAM_NAME='checkFtthFree';
 
 my $IPV6_COMPAT=eval { require IO::Socket::IP; IO::Socket::IP->VERSION(0.25) };
@@ -396,9 +396,10 @@ END_OF_POWERSHELL_SCRIPT
           }
         }
         if(defined $device) {
-          my %devices=(intf => $device);
-          my $activeDevice=getFileFirstLine("/sys/class/net/$device/bonding/active_slave");
-          %devices = (intf => $activeDevice, bonding => $device ) if(defined $activeDevice);
+          @cmdOutputLines=`$IP_CMD_PATH link show $device 2>/dev/null`;
+          my %devices = defined $cmdOutputLines[0] && $cmdOutputLines[0] =~ /^\d+\s*:\s*\Q$device\E\@([^\s\/]{1,15})\s*:/ ? (intf => $1, vlan => $device) : (intf => $device);
+          my $activeDevice=getFileFirstLine("/sys/class/net/$devices{intf}/bonding/active_slave");
+          @devices{'bonding','intf'}=($devices{intf},$activeDevice) if(defined $activeDevice);
           $netConf{$_.'.dev'}=$devices{$_} foreach(keys %devices);
           my %INTF_SETTINGS = map {$_ => 1} (qw'mtu qdisc qlen');
           foreach my $devType (keys %devices) {
