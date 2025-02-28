@@ -62,35 +62,28 @@ sub findCmd {
   return IPC::Cmd::can_run($cmd);
 }
 
-my $VERSION='0.26';
+my $VERSION='0.27';
 my $PROGRAM_NAME='checkFtthFree';
 
 my $IPV6_COMPAT=eval { require IO::Socket::IP; IO::Socket::IP->VERSION(0.25) };
 
-my %TEST_DATA = ( 'local' => { IPv4 => ['212.27.38.253',8095,'/fixed/10G',2,10] },
-                  Internet => { IPv4 => { download => { 12876 => { BBR => ['ipv4.scaleway.testdebit.info',80,'/10G.iso',10,30],
-                                                                   CUBIC => ['ping.online.net',80,'/10000Mo.dat',10,30] },
-                                                        5410 => { BBR => ['ipv4.paris.testdebit.info',80,'/10G.iso',10,30],
-                                                                  CUBIC => ['ipv4.bouygues.testdebit.info',80,'/10G.iso',10,30] } },
-                                          upload => { 12876 => ['ipv4.scaleway.testdebit.info',80,'',10,30],
-                                                      5410 => ['ipv4.paris.testdebit.info',80,'',10,30] } },
-                                IPv6 => { download => { 12876 => { BBR => ['ipv6.scaleway.testdebit.info',80,'/10G.iso',10,30],
-                                                                   CUBIC => ['ping6.online.net',80,'/10000Mo.dat',10,30] },
-                                                        5410 => { BBR => ['ipv6.paris.testdebit.info',80,'/10G.iso',10,30],
-                                                                  CUBIC => ['ipv6.bouygues.testdebit.info',80,'/10G.iso',10,30] } },
-                                          upload => { 12876 => ['ipv6.scaleway.testdebit.info',80,'',10,30],
-                                                      5410 => ['ipv6.paris.testdebit.info',80,'',10,30] } },
-                  } );
-my %AS_NAMES = ( 5410 => 'Bouygues Telecom',
-                 6799 => 'OTE',
-                 12322 => 'Free',
-                 12876 => 'Scaleway',
-                 16276 => 'OVHcloud',
-                 21409 => 'Ikoula',
-                 24904 => 'Kwaoo K-Net',
-                 53589 => 'PlanetHoster',
-                 197133 => 'Mediactive Network',
-                 200780 => 'Appliwave' );
+my %TEST_DATA = (
+  local => {
+    timeout => 2,
+    latencyWarningThreshold => 10,
+    servers => {
+      Freebox => ['212.27.38.253','[fd0f:ee:b0::1]',8095,'/fixed/10G'],
+    },
+  },
+  Internet => {
+    timeout => 8,
+    latencyWarningThreshold => 30,
+    servers => {
+      Scaleway => ['ping.online.net','ping6.online.net',80,'/10000Mo.dat','BBR'],
+      Appliwave => ['ipv4.appliwave.testdebit.info','ipv6.appliwave.testdebit.info',80,'/10G.iso','BBR'],
+    },
+  },
+    );
 
 my $MTU=1500;
 my $MSS=$MTU-40;
@@ -100,7 +93,6 @@ my $GOODPUT_700Mbps_Bytes=700_000_000*$TCP_EFFICIENCY/8;
 my $RECOMMENDED_MIN_RTT_MAX_FOR_FULL_BANDWIDTH=15;
 my $RECOMMENDED_MIN_RCV_WINDOW_SIZE=$GOODPUT_1Gbps_Bytes*$RECOMMENDED_MIN_RTT_MAX_FOR_FULL_BANDWIDTH/1000;
 my $RECOMMENDED_MIN_SND_WINDOW_SIZE=$GOODPUT_700Mbps_Bytes*$RECOMMENDED_MIN_RTT_MAX_FOR_FULL_BANDWIDTH/1000;
-my $TCP_WMEM_SND_WINDOW_RATIO=7/10;
 
 my %cmdOpts=('check-update' => ['Effectue seulement la vérification de disponibilité de nouvelle version','c'],
              'skip-check-update' => ['Désactive la vérification de disponibilité de nouvelle version','C'],
@@ -113,12 +105,15 @@ my %cmdOpts=('check-update' => ['Effectue seulement la vérification de disponib
              latency => ['Effectue seulement les tests de latence (pas de test de débit)','l'],
              'skip-latency' => ['Désactive les tests de latence (tests de débit uniquement, empêche la détection de certains problèmes)','L'],
              upload => ['Effectue un test de débit montant au lieu de descendant (EXPERIMENTAL)','u'],
+             'alternate-srv' => ["Change de serveur pour les tests Internet (utilise Appliwave au lieu de Scaleway)",'a'],
+             'all-srv' => ['Effectue les tests Internet en double, une fois avec chaque serveur','A'],
              'binary-units' => ["Utilise les préfixes binaires pour le système d'unités de débit",'b'],
              'extended-test' => ['Effectue des tests plus longs (multiplie par 2 la durée max des tests)','e'],
              'quiet' => ["Mode silencieux: désactive les messages d'analyse et d'avertissement",'q'],
              help => ["Affiche l'aide",'h'],
              version => ['Affiche la version','v'],
-             ipv6 => ['Effectue les tests Internet en IPv6 (IPv4 par défaut)','6']);
+             ipv6 => ['Effectue les tests Internet en IPv6 (IPv4 par défaut)','6'],
+             'all-ipv' => ['Effectue tous les tests en double, une fois en IPv4 et une fois en IPv6','2']);
 my %cmdOptsAliases = map {$cmdOpts{$_}[1] => $_} (keys %cmdOpts);
 
 my $httpClient=HTTP::Tiny->new(proxy => undef, http_proxy => undef, https_proxy => undef);
@@ -180,6 +175,7 @@ usage() if(any {$options{$_->[0]} && $options{$_->[1]}} (['check-update','skip-c
                                                          ['freebox','alternate-srv'],
                                                          ['freebox','all-srv'],
                                                          ['alternate-srv','all-srv'],
+                                                         ['ipv6','all-ipv'],
                                                          ['latency','skip-latency'],
                                                          ['latency','upload'],
                                                          ['net-conf','quiet'],
@@ -752,7 +748,9 @@ sub bsdGetLinkCounters {
   return {};
 }
 
-my ($rcvWindow,$rmemMaxParam,$rmemMaxValuePrefix,$tcpAdvWinScale,$sndWindow,$wmemMaxParam,$wmemMaxValuePrefix,$degradedTcpConf);
+my ($rcvWindow,$rmemMax,$rmemMaxParam,$rmemMaxValuePrefix,$tcpAdvWinScale);
+my ($sndWindow,$wmemMax,$wmemMaxParam,$wmemMaxValuePrefix);
+my ($degradedTcpConf,$suggestionForRcvWindowPrinted,$suggestionForSndWindowPrinted,$warningForTcpBufferPrinted);
 sub netConfAnalysis {
   if(! %netConf) {
     print "[!] Echec de lecture de la configuration réseau du système\n";
@@ -774,23 +772,29 @@ sub netConfAnalysis {
     }
     map {print "  $_: $prefixedConf{$_}\n"} (sort keys %prefixedConf);
     if(defined $netConf{AutoTuningLevelLocal}) {
-      processWindowsAutoTuningLevel('AutoTuningLevelLocal');
-      if($netConf{AutoTuningLevelLocal} ne 'Normal') {
-        print "[!] La valeur actuelle de AutoTuningLevelLocal peut dégrader les performances\n";
-        if($options{suggestions}) {
-          print "    Recommandation: ajuster le paramètre avec l'une des deux commandes suivantes\n";
-          print "      [PowerShell] Set-NetTCPSetting -SettingName Internet -AutoTuningLevelLocal Normal\n";
-          print "      [cmd.exe] netsh interface tcp set global autotuninglevel=normal\n";
-        }
-      }
+      $rmemMaxParam='AutoTuningLevelLocal';
     }elsif(defined $netConf{AutoTuningLevelGroupPolicy}) {
-      processWindowsAutoTuningLevel('AutoTuningLevelGroupPolicy');
-      if($netConf{AutoTuningLevelGroupPolicy} ne 'Normal') {
-        print "[!] La stratégie de groupe appliquée aux paramètres AutoTuningLevelEffective et AutoTuningLevelGroupPolicy peut dégrader les performances\n";
-        if($options{suggestions}) {
-          print "    Recommandation: effectuer l'une des deux actions suivantes\n";
-          print "      - configurer la valeur du paramètre AutoTuningLevelGroupPolicy à \"Normal\" dans la stratégie de groupe\n";
-          print "      - utiliser la configuration locale pour ce paramètre (configurer le valeur du paramètre AutoTuningLevelEffective à \"Local\")\n";
+      $rmemMaxParam='AutoTuningLevelGroupPolicy';
+    }
+    if(defined $rmemMaxParam) {
+      processWindowsAutoTuningLevel($rmemMaxParam);
+      if($netConf{$rmemMaxParam} ne 'Normal' && $netConf{$rmemMaxParam} ne 'Experimental') {
+        if($rmemMaxParam eq 'AutoTuningLevelLocal') {
+          print "[!] La valeur actuelle de AutoTuningLevelLocal peut dégrader les performances\n";
+          if($options{suggestions}) {
+            print "    Recommandation: ajuster le paramètre en utilisant l'une des deux commandes suivantes\n";
+            print "      [PowerShell] Set-NetTCPSetting -SettingName Internet -AutoTuningLevelLocal Normal\n";
+            print "      [cmd.exe] netsh interface tcp set global autotuninglevel=normal\n";
+            $suggestionForRcvWindowPrinted=1;
+          }
+        }else{
+          print "[!] La stratégie de groupe appliquée aux paramètres AutoTuningLevelEffective et AutoTuningLevelGroupPolicy peut dégrader les performances\n";
+          if($options{suggestions}) {
+            print "    Recommandation: effectuer l'une des deux actions suivantes\n";
+            print "      - configurer la valeur du paramètre AutoTuningLevelGroupPolicy à \"Normal\" dans la stratégie de groupe\n";
+            print "      - utiliser la configuration locale pour ce paramètre (configurer le valeur du paramètre AutoTuningLevelEffective à \"Local\")\n";
+            $suggestionForRcvWindowPrinted=1;
+          }
         }
       }
     }
@@ -811,7 +815,6 @@ sub netConfAnalysis {
   }else{
     map {print "  $_: $netConf{$_}\n"} (sort keys %netConf);
     if(LINUX) {
-      my $rmemMax;
       if(defined $netConf{'net.core.rmem_max'}) {
         if($netConf{'net.core.rmem_max'} =~ /^\s*(\d+)\s*$/) {
           ($rmemMax,$rmemMaxParam)=($1,'net.core.rmem_max');
@@ -842,7 +845,6 @@ sub netConfAnalysis {
           print "[!] Valeur de net.ipv4.tcp_adv_win_scale non trouvée\n";
         }
       }
-      my $wmemMax;
       if(defined $netConf{'net.core.wmem_max'}) {
         if($netConf{'net.core.wmem_max'} =~ /^\s*(\d+)\s*$/) {
           ($wmemMax,$wmemMaxParam)=($1,'net.core.wmem_max');
@@ -857,7 +859,7 @@ sub netConfAnalysis {
           print "[!] Valeur de net.ipv4.tcp_wmem non reconnue\n";
         }
       }
-      $sndWindow=$wmemMax*$TCP_WMEM_SND_WINDOW_RATIO if(defined $wmemMax);
+      $sndWindow=wmemToSndWindowValue($wmemMax) if(defined $wmemMax);
       if(exists $netConf{'link.speed'}
          && exists $netConf{'dev.link_speed'} && $netConf{'dev.link_speed'} ne 'Unknown'
          && exists $netConf{'dev.link_width'} && $netConf{'dev.link_width'}) {
@@ -917,16 +919,23 @@ sub netConfAnalysis {
   }
   if(defined $rcvWindow) {
     my $maxRttMsFor1Gbps = int($rcvWindow * 1000 / $GOODPUT_1Gbps_Bytes + 0.5);
-    print "  => Latence TCP max pour une réception à 1 Gbps: ${maxRttMsFor1Gbps} ms\n";
+    print "  => Latence max pour une réception TCP à 1 Gbps: ${maxRttMsFor1Gbps} ms\n";
     if(! MSWIN32 && $maxRttMsFor1Gbps < $RECOMMENDED_MIN_RTT_MAX_FOR_FULL_BANDWIDTH) {
       if(LINUX) {
-        if($tcpAdvWinScale < -3) {
+        if($tcpAdvWinScale < -2) {
           print "[!] Les valeurs actuelles de net.ipv4.tcp_adv_win_scale et $rmemMaxParam peuvent dégrader les performances\n";
+          if($options{suggestions}) {
+            print "    Recommandation: ajuster au moins un de ces paramètres en utilisant l'une des deux commandes suivantes\n";
+            print "      sysctl -w net.ipv4.tcp_adv_win_scale=".($tcpAdvWinScale+1)."\n";
+            print "      sysctl -w $rmemMaxParam=".rcvWindowToRmemValue($RECOMMENDED_MIN_RCV_WINDOW_SIZE)."\n";
+            $suggestionForRcvWindowPrinted=1;
+          }
         }else{
           print "[!] La valeur actuelle de $rmemMaxParam peut dégrader les performances\n";
           if($options{suggestions}) {
-            print "    Recommandation: ajuster le paramètre avec la commande suivante\n";
+            print "    Recommandation: ajuster le paramètre en utilisant la commande suivante\n";
             print "      sysctl -w $rmemMaxParam=".rcvWindowToRmemValue($RECOMMENDED_MIN_RCV_WINDOW_SIZE)."\n";
+            $suggestionForRcvWindowPrinted=1;
           }
         }
       }else{
@@ -936,12 +945,13 @@ sub netConfAnalysis {
   }
   if(defined $sndWindow) {
     my $maxRttMsFor700Mbps = int($sndWindow * 1000 / $GOODPUT_700Mbps_Bytes + 0.5);
-    print "  => Latence TCP max pour une émission à 700 Mbps: ${maxRttMsFor700Mbps} ms\n";
+    print "  => Latence max pour une émission TCP à 700 Mbps: ${maxRttMsFor700Mbps} ms\n";
     if($maxRttMsFor700Mbps < $RECOMMENDED_MIN_RTT_MAX_FOR_FULL_BANDWIDTH) {
       print "[!] La valeur actuelle de $wmemMaxParam peut dégrader les performances\n";
       if(LINUX && $options{suggestions}) {
-        print "    Recommandation: ajuster le paramètre avec la commande suivante\n";
+        print "    Recommandation: ajuster le paramètre en utilisant la commande suivante\n";
         print "      sysctl -w $wmemMaxParam=".sndWindowToWmemValue($RECOMMENDED_MIN_SND_WINDOW_SIZE)."\n";
+        $suggestionForSndWindowPrinted=1;
       }
     }
   }
@@ -1013,10 +1023,37 @@ sub rcvWindowToRmemValue {
 
 sub sndWindowToWmemValue {
   my $newSndWindow=shift;
-  my $newWmemValue=(1/$TCP_WMEM_SND_WINDOW_RATIO)*$newSndWindow;
-  $newWmemValue=fixMemSize($newWmemValue);
+  my @wmemValues=(
+    [131072,131072],
+    [235929,262144],
+    [471859,524288],
+    [943718,1048576],
+    [1677721,2097152],
+    [2936012,4194304],
+    [5033164,8388608],
+      );
+  my $newWmemValue;
+  foreach my $r_wmemValues (@wmemValues) {
+    next unless($newSndWindow<=$r_wmemValues->[0]);
+    $newWmemValue=$r_wmemValues->[1];
+    last;
+  }
+  $newWmemValue//=fixMemSize(2*$newSndWindow);
   $newWmemValue="\"$wmemMaxValuePrefix$newWmemValue\"" if(defined $wmemMaxValuePrefix);
   return $newWmemValue;
+}
+
+sub wmemToSndWindowValue {
+  my $tcpWmemMax=shift;
+  return 2*$tcpWmemMax if($tcpWmemMax <= 65536);
+  return (3-$tcpWmemMax/65536)*$tcpWmemMax if($tcpWmemMax <= 131072);
+  return (1.1-$tcpWmemMax/1310720)*$tcpWmemMax if($tcpWmemMax <= 262144);
+  return 0.9*$tcpWmemMax if($tcpWmemMax <= 1048576);
+  return (1-$tcpWmemMax/10485760)*$tcpWmemMax if($tcpWmemMax <= 2097152);
+  return (0.9-$tcpWmemMax/20971520)*$tcpWmemMax if($tcpWmemMax <= 4194304);
+  return (0.8-$tcpWmemMax/41943040)*$tcpWmemMax if($tcpWmemMax <= 8388608);
+  return (0.7-$tcpWmemMax/83886080)*$tcpWmemMax if($tcpWmemMax <= 16777216);
+  return $tcpWmemMax/2;
 }
 
 sub fixMemSize { return POSIX::ceil($_[0]/POSIX::BUFSIZ())*POSIX::BUFSIZ() }
@@ -1071,13 +1108,31 @@ END_OF_POWERSHELL_SCRIPT
 }
 
 sub testTcp {
-  my ($type,$ipv,$mode,$as,$cca)=@_;
+  my ($type,$provider,$isIpv6,$isUpload)=@_;
+
+  my $ipVer='IPv'.($isIpv6?6:4);
+  my $testDescription="Test TCP $type ($ipVer): ";
   
-  my ($testDescription,$testIp,$testPort,$testUrl,$testTimeout,$expectedMaxLatency)=getTestData(@_);
-  print "Test TCP $testDescription\n";
+  my ($hostIpv4,$hostIpv6,$testPort,$testPath,$cca)=@{$TEST_DATA{$type}{servers}{$provider}};
+  my $testHost = $isIpv6 ? $hostIpv6 : $hostIpv4;
+  
+  if($type eq 'local') {
+    $testDescription.=($options{latency}?'':'téléchargement depuis la ').'Freebox';
+  }else{
+    $testDescription .= $isUpload ? 'envoi vers le ' : 'téléchargement depuis le ' unless($options{latency});
+    $testDescription.="serveur $provider";
+    if($isUpload) {
+      my $uploadCca=uc($netConf{CongestionProvider}//$netConf{'net.ipv4.tcp_congestion_control'});
+      $testDescription.=" [$uploadCca]" if(defined $uploadCca);
+    }else{
+      $testDescription.=" [$cca]" if(defined $cca);
+    }
+  }
+  
+  print "$testDescription\n";
 
   my ($r_checkMaxThroughputForLatency,$r_getSpeed);
-  if($type eq 'local' || $mode eq 'download') {
+  if($type eq 'local' || ! $isUpload) {
     ($r_checkMaxThroughputForLatency,$r_getSpeed)=(\&checkMaxRcvThroughputForLatency,\&getDlSpeed);
   }else{
     ($r_checkMaxThroughputForLatency,$r_getSpeed)=(\&checkMaxSndThroughputForLatency,\&getUlSpeed);
@@ -1085,30 +1140,31 @@ sub testTcp {
   
   my ($speed,$maxThroughput);
 
+  $warningForTcpBufferPrinted=0;
   if(! $options{'skip-latency'}) {
-    my ($rttMs,$jitter)=getTcpLatency($testIp,$testPort,$ipv,$testTimeout,$maxNbPings);
+    my ($rttMs,$jitter)=getTcpLatency($testHost,$testPort,$ipVer,$TEST_DATA{$type}{timeout},$maxNbPings);
     if(! defined $rttMs) {
       if($type eq 'local') {
         print "[!] Echec du test de latence\n";
-        print "    En cas d'absence de Freebox, le paramètre --skip-freebox (-F) peut être utilisé pour désactiver le test local\n";
+        print "    En cas d'absence de Freebox, le paramètre --skip-freebox (-F) peut être utilisé pour désactiver le test local\n" unless($options{quiet});
         return undef;
       }else{
         quit('[!] Echec du test de latence');
       }
     }
     print "  --> Latence: $rttMs ms\t\t\t[gigue: $jitter ms]\n";
-    print '[!] Latence élevée pour une connexion '.($type eq 'local' ? 'locale' : 'FTTH')."\n" if($rttMs > $expectedMaxLatency);
-    $maxThroughput=$r_checkMaxThroughputForLatency->($rttMs);
+    print '[!] Latence élevée pour une connexion '.($type eq 'local' ? 'locale' : 'FTTH')."\n" if(! $options{quiet} && $rttMs > $TEST_DATA{$type}{latencyWarningThreshold});
+    $maxThroughput=$r_checkMaxThroughputForLatency->(getEffectiveRttFromTcpConnectLatency($rttMs));
   }
   
   if(! $options{latency}) {
-    $httpClient->{timeout}=$testTimeout;
+    $httpClient->{timeout}=$TEST_DATA{$type}{timeout};
     my $r_chunksData;
-    ($speed,$r_chunksData)=$r_getSpeed->($testUrl);
+    ($speed,$r_chunksData)=$r_getSpeed->("http://$testHost:$testPort".($isUpload?'/':$testPath));
     if(! defined $speed) {
       if($type eq 'local' && $options{'skip-latency'}) {
         print "[!] Echec du test de débit\n";
-        print "    En cas d'absence de Freebox, le paramètre --skip-freebox (-F) peut être utilisé pour désactiver le test local\n";
+        print "    En cas d'absence de Freebox, le paramètre --skip-freebox (-F) peut être utilisé pour désactiver le test local\n" unless($options{quiet});
         return undef;
       }else{
         quit('[!] Echec du test de débit');
@@ -1121,33 +1177,58 @@ sub testTcp {
     map {$chunksSquaredDeviations+=($_->[1]/$_->[0]-$chunksAvgSpeed)**2*$_->[0]} @{$r_chunksData};
     my $dlSpeedRSD=sprintf('%.2f',sqrt($chunksSquaredDeviations/$totalChunksTime)*100/$chunksAvgSpeed);
     print "  --> Débit: ".readableSpeed($speed)."\t[fluctuation: ${dlSpeedRSD}%]\n";
+    if(defined $maxThroughput && $speed > 4*$maxThroughput/5 && ! $warningForTcpBufferPrinted) { # $maxThroughput is only defined if $options{quiet} is false
+      print "[!] Le débit pourrait avoir été limité par le paramétrage de la mémoire tampon TCP du système\n";
+      if($options{suggestions}
+         && (($isUpload && ! $suggestionForSndWindowPrinted)
+             || (! $isUpload && ! $suggestionForRcvWindowPrinted))) {
+        if(MSWIN32) { # On Windows, $maxThroughput is only defined for download tests
+          if($rmemMaxParam eq 'AutoTuningLevelLocal') {
+            print "    Suggestion: ajuster le paramètre AutoTuningLevelLocal en utilisant l'une des deux commandes suivantes\n";
+            print "      [PowerShell] Set-NetTCPSetting -SettingName Internet -AutoTuningLevelLocal Experimental\n";
+            print "      [cmd.exe] netsh interface tcp set global autotuninglevel=experimental\n";
+          }else{
+            print "    Suggestion: effectuer l'une des deux actions suivantes\n";
+            print "      - configurer la valeur du paramètre AutoTuningLevelGroupPolicy à \"Experimental\" dans la stratégie de groupe\n";
+            print "      - utiliser la configuration locale pour ce paramètre (configurer le valeur du paramètre AutoTuningLevelEffective à \"Local\")\n";
+          }
+          $suggestionForRcvWindowPrinted=1;
+        }elsif(LINUX) {
+          if($isUpload) {
+            my $recommendedValue=getIncreasedTcpBufVal($wmemMax);
+            $recommendedValue="\"$wmemMaxValuePrefix$recommendedValue\"" if(defined $wmemMaxValuePrefix);
+            print "    Suggestion: augmenter la mémoire tampon max en utilisant la commande suivante\n";
+            print "      sysctl -w $wmemMaxParam=$recommendedValue\n";
+            $suggestionForSndWindowPrinted=1;
+          }else{
+            my $recommendedValue=getIncreasedTcpBufVal($rmemMax);
+            $recommendedValue="\"$rmemMaxValuePrefix$recommendedValue\"" if(defined $rmemMaxValuePrefix);
+            if($tcpAdvWinScale < -2) {
+              print "    Suggestion: ajuster le paramétrage réseau du système en utilisant l'une des deux commandes suivantes\n";
+              print "      sysctl -w net.ipv4.tcp_adv_win_scale=".($tcpAdvWinScale+1)."\n";
+            }else{
+              print "    Suggestion: augmenter la mémoire tampon max en utilisant la commande suivante\n";
+            }
+            print "      sysctl -w $rmemMaxParam=$recommendedValue\n";
+            $suggestionForRcvWindowPrinted=1;
+          }
+        }else{
+          print "    Suggestion: augmenter la mémoire tampon max en appliquant le changement de configuration suivant\n";
+          if($isUpload) {
+            print "      $wmemMaxParam = ".getIncreasedTcpBufVal($sndWindow)."\n";
+            $suggestionForSndWindowPrinted=1;
+          }else{
+            print "      $rmemMaxParam = ".getIncreasedTcpBufVal($rcvWindow)."\n";
+            $suggestionForRcvWindowPrinted=1;
+          }
+        }
+      }
+    }
   }
   
   checkNetAdapterErrors() unless($options{quiet});
   
   return ($speed,$maxThroughput);
-}
-
-sub getTestData {
-  my ($type,$ipv,$mode,$as,$cca)=@_;
-  my $testDescription="$type ($ipv): ";
-  if($type eq 'local') {
-    $testDescription.=($options{latency}?'':'téléchargement depuis la ').'Freebox';
-  }else{
-    $testDescription .= $mode eq 'download' ? "téléchargement depuis l'" : "envoi vers l'" if(! $options{latency});
-    $testDescription.="AS $as ($AS_NAMES{$as}) ";
-    if($mode eq 'download') {
-      $testDescription.="[$cca]";
-    }else{
-      my $uploadCca=uc($netConf{CongestionProvider}//$netConf{'net.ipv4.tcp_congestion_control'}//'?');
-      $testDescription.="[$uploadCca]";
-    }
-  }
-  my $r_testData=\%TEST_DATA;
-  while(my $testMode=shift) {
-    $r_testData=$r_testData->{$testMode};
-  }
-  return ($testDescription,@{$r_testData}[0,1],"http://$r_testData->[0]:$r_testData->[1]$r_testData->[2]",@{$r_testData}[3,4]);
 }
 
 my %latencyCache;
@@ -1202,33 +1283,66 @@ sub getMedianValue {
 }
 
 sub checkMaxRcvThroughputForLatency {
-  return undef unless($rcvWindow && ! $options{quiet});
+  return undef unless($rcvWindow); # $rcvWindow is only defined if $options{quiet} is false
   my $latency=shift;
   my $maxThroughput=$rcvWindow*1000/$latency;
   if($maxThroughput < $GOODPUT_1Gbps_Bytes) {
     print "[!] Avec cette latence, le paramétrage actuel de mémoire tampon TCP pourrait limiter le débit en réception à environ ".readableSpeed($maxThroughput)."\n";
-    if(LINUX && $options{suggestions} && $tcpAdvWinScale > -4) {
-      print "    Recommandation: si la latence estimée est correcte, augmenter la mémoire tampon max avec la commande suivante\n";
+    $warningForTcpBufferPrinted=1;
+    if(LINUX && $options{suggestions} && ! $suggestionForRcvWindowPrinted) {
+      if($tcpAdvWinScale < -2) {
+        print "    Recommandation: si la latence estimée est correcte, ajuster le paramétrage en utilisant l'une des deux commandes suivantes\n";
+        print "      sysctl -w net.ipv4.tcp_adv_win_scale=".($tcpAdvWinScale+1)."\n";
+      }else{
+        print "    Recommandation: si la latence estimée est correcte, augmenter la mémoire tampon max en utilisant la commande suivante\n";
+      }
       print "      sysctl -w $rmemMaxParam=".rcvWindowToRmemValue($GOODPUT_1Gbps_Bytes*$latency/1000)."\n";
+      $suggestionForRcvWindowPrinted=1;
     }
-    return $maxThroughput;
   }
-  return undef;
+  return $maxThroughput;
 }
 
 sub checkMaxSndThroughputForLatency {
-  return undef unless($sndWindow && ! $options{quiet});
+  return undef unless($sndWindow); # $sndWindow is only defined if $options{quiet} is false
   my $latency=shift;
   my $maxThroughput=$sndWindow*1000/$latency;
   if($maxThroughput < $GOODPUT_700Mbps_Bytes) {
     print "[!] Avec cette latence, le paramétrage actuel de mémoire tampon TCP pourrait limiter le débit en émission à environ ".readableSpeed($maxThroughput)."\n";
-    if(LINUX && $options{suggestions}) {
-      print "    Recommandation: si la latence estimée est correcte, augmenter la mémoire tampon max avec la commande suivante\n";
+    if(LINUX && $options{suggestions} && ! $suggestionForSndWindowPrinted) {
+      print "    Recommandation: si la latence estimée est correcte, augmenter la mémoire tampon max en utilisant la commande suivante\n";
       print "      sysctl -w $wmemMaxParam=".sndWindowToWmemValue($GOODPUT_700Mbps_Bytes*$latency/1000)."\n";
+      $suggestionForSndWindowPrinted=1;
     }
-    return $maxThroughput;
   }
-  return undef;
+  return $maxThroughput;
+}
+
+sub getEffectiveRttFromTcpConnectLatency {
+  my $rtt=shift;
+  if(MSWIN32) {
+    if($rtt > 23/9) {
+      $rtt-=2.3;
+    }else{
+      $rtt/=10;
+    }
+  }else{
+    if($rtt > 2.5) {
+      $rtt-=1.5;
+    }elsif($rtt > 1) {
+      $rtt=$rtt/3+1/6;
+    }else{
+      $rtt/=2;
+    }
+  }
+  return $rtt;
+}
+
+sub getIncreasedTcpBufVal {
+  my $val=shift;
+  my $increasedVal=1<<16;
+  $increasedVal<<=1 while($val > 4*$increasedVal/5);
+  return $increasedVal;
 }
 
 sub getDlSpeed {
@@ -1370,10 +1484,12 @@ sub getUlSpeed {
   my $result=$httpClient->post($url,{content => $r_dataCallback,
                                      headers => {'content-type' => 'application/octet-stream'}});
   $endTime//=time();
-  if($result->{success}) {
-    quit("[!] Impossible d'évaluer le débit nominal (téléchargement trop court pour supprimer la phase de \"slow-start\")") unless($uploadedSize && $endTime > $startTime+$slowStartSkipDelay+1);
+  if($uploadedSize) {
+    quit("[!] Impossible d'évaluer le débit nominal (téléchargement trop court pour supprimer la phase de \"slow-start\")") unless($endTime > $startTime+$slowStartSkipDelay+1);
     my $ulSpeed=$uploadedSize/($endTime-$startTime);
     return wantarray() ? ($ulSpeed,\@chunkUlData) : $ulSpeed;
+  }elsif($result->{success}) {
+    quit("[!] Echec d'envoi vers \"$url\"");
   }else{
     my $errorDetail = $result->{status} == 599 ? $result->{content} : "HTTP status: $result->{status}, reason: $result->{reason}";
     $errorDetail=~s/\x{0092}/'/g if(MSWIN32);
@@ -1424,37 +1540,42 @@ if(! $options{'skip-net-conf'}) {
 }
 quit() if($options{'net-conf'});
 
-my $srvAs = $options{'alternate-srv'} ? '5410' : '12876';
+my $srvProvider = $options{'alternate-srv'} ? 'Appliwave' : 'Scaleway';
 
 my ($localDlSpeed,$localMaxThroughput,$internetBbrDlSpeed,$internetBbrMaxThroughput,$internetCubicDlSpeed,$internetCubicMaxThroughput,$internetUlSpeed,$internetUlMaxThroughput);
 
 if(! $options{upload}) {
   if(! $options{'skip-freebox'}) {
     print "\n" if($crNeeded);
-    ($localDlSpeed,$localMaxThroughput)=testTcp('local','IPv4');
+    # workaround for degraded Freebox perfs in IPv6: only do local IPv6 test when both IP versions are enabled, or when IPv6 is enabled in Freebox-only test mode
+    ($localDlSpeed,$localMaxThroughput)=testTcp('local','Freebox',$options{ipv6} && $options{freebox});
+    if($options{'all-ipv'}) {
+      print "\n";
+      my ($local2,$localMax2)=testTcp('local','Freebox',1);
+      ($localDlSpeed,$localMaxThroughput)=($local2,$localMax2) if(defined $local2 && (! defined $localDlSpeed || $local2>$localDlSpeed));
+    }        
     $crNeeded=1;
   }
   if(! $options{freebox}) {
     print "\n" if($crNeeded);
-    ($internetBbrDlSpeed,$internetBbrMaxThroughput)=testTcp('Internet',$options{ipv6} ? 'IPv6' : 'IPv4','download',$srvAs,'BBR');
+    ($internetBbrDlSpeed,$internetBbrMaxThroughput)=testTcp('Internet',$srvProvider,$options{ipv6});
+    if($options{'all-ipv'}) {
+      print "\n";
+      my ($bbr2,$bbrMax2)=testTcp('Internet',$srvProvider,1);
+      ($internetBbrDlSpeed,$internetBbrMaxThroughput)=($bbr2,$bbrMax2) if(defined $bbr2 && (! defined $internetBbrDlSpeed || $bbr2>$internetBbrDlSpeed));
+    }
     if($options{'all-srv'}) {
       print "\n";
-      my ($bbr2,$bbrMax2)=testTcp('Internet',$options{ipv6} ? 'IPv6' : 'IPv4','download',5410,'BBR');
-      if($bbr2>$internetBbrDlSpeed) {
-        $internetBbrDlSpeed=$bbr2;
-        $internetBbrMaxThroughput=$bbrMax2;
+      my ($bbr2,$bbrMax2)=testTcp('Internet','Appliwave',$options{ipv6});
+      ($internetBbrDlSpeed,$internetBbrMaxThroughput)=($bbr2,$bbrMax2) if(defined $bbr2 && (! defined $internetBbrDlSpeed || $bbr2>$internetBbrDlSpeed));
+      if($options{'all-ipv'}) {
+        print "\n";
+        my ($bbr3,$bbrMax3)=testTcp('Internet','Appliwave',1);
+        ($internetBbrDlSpeed,$internetBbrMaxThroughput)=($bbr3,$bbrMax3) if(defined $bbr3 && (! defined $internetBbrDlSpeed || $bbr3>$internetBbrDlSpeed));
       }
     }
-    print "\n";
-    ($internetCubicDlSpeed,$internetCubicMaxThroughput)=testTcp('Internet',$options{ipv6} ? 'IPv6' : 'IPv4','download',$srvAs,'CUBIC');
-    if($options{'all-srv'}) {
-      print "\n";
-      my ($cubic2,$cubicMax2)=testTcp('Internet',$options{ipv6} ? 'IPv6' : 'IPv4','download',5410,'CUBIC');
-      if($cubic2>$internetCubicDlSpeed) {
-        $internetCubicDlSpeed=$cubic2;
-        $internetCubicMaxThroughput=$cubicMax2;
-      }
-    }
+#    print "\n";
+#    ($internetCubicDlSpeed,$internetCubicMaxThroughput)=testTcp('Internet',$srvProviderCubic);
     $crNeeded=1;
   }
 }
@@ -1463,13 +1584,20 @@ quit() if($options{freebox});
 
 if($options{upload}) {
   print "\n" if($crNeeded);
-  ($internetUlSpeed,$internetUlMaxThroughput)=testTcp('Internet',$options{ipv6} ? 'IPv6' : 'IPv4','upload',$srvAs);
+  ($internetUlSpeed,$internetUlMaxThroughput)=testTcp('Internet',$srvProvider,$options{ipv6},1);
+  if($options{'all-ipv'}) {
+    print "\n";
+    my ($upload2,$uploadMax2)=testTcp('Internet',$srvProvider,1,1);
+    ($internetUlSpeed,$internetUlMaxThroughput)=($upload2,$uploadMax2) if($upload2>$internetUlSpeed);
+  }
   if($options{'all-srv'}) {
     print "\n";
-    my ($upload2,$uploadMax2)=testTcp('Internet',$options{ipv6} ? 'IPv6' : 'IPv4','upload',5410);
-    if($upload2>$internetUlSpeed) {
-      $internetUlSpeed=$upload2;
-      $internetUlMaxThroughput=$uploadMax2;
+    my ($upload2,$uploadMax2)=testTcp('Internet','Appliwave',$options{ipv6},1);
+    ($internetUlSpeed,$internetUlMaxThroughput)=($upload2,$uploadMax2) if($upload2>$internetUlSpeed);
+    if($options{'all-ipv'}) {
+      print "\n";
+      my ($upload3,$uploadMax3)=testTcp('Internet','Appliwave',1,1);
+      ($internetUlSpeed,$internetUlMaxThroughput)=($upload3,$uploadMax3) if($upload3>$internetUlSpeed);
     }
   }
   $crNeeded=1;
