@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 #
 # checkFtthFree
-# Copyright (C) 2023-2025 Yann Riou <yaribzh@gmail.com>
+# Copyright (C) 2023-2026 Yann Riou <yaribzh@gmail.com>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as published by
@@ -62,7 +62,7 @@ sub findCmd {
   return IPC::Cmd::can_run($cmd);
 }
 
-my $VERSION='0.27';
+my $VERSION='0.28';
 my $PROGRAM_NAME='checkFtthFree';
 
 my $IPV6_COMPAT=eval { require IO::Socket::IP; IO::Socket::IP->VERSION(0.25) };
@@ -80,7 +80,7 @@ my %TEST_DATA = (
     latencyWarningThreshold => 30,
     servers => {
       Scaleway => ['ping.online.net','ping6.online.net',80,'/10000Mo.dat','BBR'],
-      Appliwave => ['ipv4.appliwave.testdebit.info','ipv6.appliwave.testdebit.info',80,'/10G.iso','BBR'],
+      Eurofiber => ['ipv4.eurofiber.testdebit.info','ipv6.eurofiber.testdebit.info',80,'/10G.iso','BBR'],
     },
   },
     );
@@ -105,7 +105,7 @@ my %cmdOpts=('check-update' => ['Effectue seulement la vérification de disponib
              latency => ['Effectue seulement les tests de latence (pas de test de débit)','l'],
              'skip-latency' => ['Désactive les tests de latence (tests de débit uniquement, empêche la détection de certains problèmes)','L'],
              upload => ['Effectue un test de débit montant au lieu de descendant (EXPERIMENTAL)','u'],
-             'alternate-srv' => ["Change de serveur pour les tests Internet (utilise Appliwave au lieu de Scaleway)",'a'],
+             'alternate-srv' => ["Change de serveur pour les tests Internet (utilise Eurofiber au lieu de Scaleway)",'a'],
              'all-srv' => ['Effectue les tests Internet en double, une fois avec chaque serveur','A'],
              'binary-units' => ["Utilise les préfixes binaires pour le système d'unités de débit",'b'],
              'extended-test' => ['Effectue des tests plus longs (multiplie par 2 la durée max des tests)','e'],
@@ -1540,7 +1540,7 @@ if(! $options{'skip-net-conf'}) {
 }
 quit() if($options{'net-conf'});
 
-my $srvProvider = $options{'alternate-srv'} ? 'Appliwave' : 'Scaleway';
+my $srvProvider = $options{'alternate-srv'} ? 'Eurofiber' : 'Scaleway';
 
 my ($localDlSpeed,$localMaxThroughput,$internetBbrDlSpeed,$internetBbrMaxThroughput,$internetCubicDlSpeed,$internetCubicMaxThroughput,$internetUlSpeed,$internetUlMaxThroughput);
 
@@ -1566,11 +1566,11 @@ if(! $options{upload}) {
     }
     if($options{'all-srv'}) {
       print "\n";
-      my ($bbr2,$bbrMax2)=testTcp('Internet','Appliwave',$options{ipv6});
+      my ($bbr2,$bbrMax2)=testTcp('Internet','Eurofiber',$options{ipv6});
       ($internetBbrDlSpeed,$internetBbrMaxThroughput)=($bbr2,$bbrMax2) if(defined $bbr2 && (! defined $internetBbrDlSpeed || $bbr2>$internetBbrDlSpeed));
       if($options{'all-ipv'}) {
         print "\n";
-        my ($bbr3,$bbrMax3)=testTcp('Internet','Appliwave',1);
+        my ($bbr3,$bbrMax3)=testTcp('Internet','Eurofiber',1);
         ($internetBbrDlSpeed,$internetBbrMaxThroughput)=($bbr3,$bbrMax3) if(defined $bbr3 && (! defined $internetBbrDlSpeed || $bbr3>$internetBbrDlSpeed));
       }
     }
@@ -1592,11 +1592,11 @@ if($options{upload}) {
   }
   if($options{'all-srv'}) {
     print "\n";
-    my ($upload2,$uploadMax2)=testTcp('Internet','Appliwave',$options{ipv6},1);
+    my ($upload2,$uploadMax2)=testTcp('Internet','Eurofiber',$options{ipv6},1);
     ($internetUlSpeed,$internetUlMaxThroughput)=($upload2,$uploadMax2) if($upload2>$internetUlSpeed);
     if($options{'all-ipv'}) {
       print "\n";
-      my ($upload3,$uploadMax3)=testTcp('Internet','Appliwave',1,1);
+      my ($upload3,$uploadMax3)=testTcp('Internet','Eurofiber',1,1);
       ($internetUlSpeed,$internetUlMaxThroughput)=($upload3,$uploadMax3) if($upload3>$internetUlSpeed);
     }
   }

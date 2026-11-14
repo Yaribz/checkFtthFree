@@ -11,7 +11,7 @@ Usage:
     checkFtthFree.pl [<options>]
         --all-ipv (-2) : Effectue tous les tests en double, une fois en IPv4 et une fois en IPv6
         --ipv6 (-6) : Effectue les tests Internet en IPv6 (IPv4 par défaut)
-        --alternate-srv (-a) : Change de serveur pour les tests Internet (utilise Appliwave au lieu de Scaleway)
+        --alternate-srv (-a) : Change de serveur pour les tests Internet (utilise Eurofiber au lieu de Scaleway)
         --all-srv (-A) : Effectue les tests Internet en double, une fois avec chaque serveur
         --binary-units (-b) : Utilise les préfixes binaires pour le système d'unités de débit
         --check-update (-c) : Effectue seulement la vérification de disponibilité de nouvelle version
